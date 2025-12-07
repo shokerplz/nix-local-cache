@@ -7,6 +7,12 @@ import { Input } from '../../components/ui/input'
 import { Loader2 } from 'lucide-react'
 import React, { useState } from 'react'
 
+interface BuildPayload {
+  flake_url?: string
+  flake_branch?: string
+  hosts?: string[]
+}
+
 export const Route = createFileRoute('/build/new')({
   component: NewBuild,
 })
@@ -19,7 +25,7 @@ function NewBuild() {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload: any = {}
+      const payload: BuildPayload = {}
       if (flakeUrl) payload.flake_url = flakeUrl
       if (branch) payload.flake_branch = branch
       if (hosts) payload.hosts = hosts.split(',').map(h => h.trim()).filter(h => h.length > 0)

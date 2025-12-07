@@ -24,10 +24,24 @@ async fn main() -> Result<()> {
 
     // Start Worker
     let service_clone = service.clone();
+    let worker_count = settings.worker_threads;
+    
     tokio::spawn(async move {
-        info!("Worker started");
+        info!("Worker started with {} threads", worker_count);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(worker_count));
+        
         while let Some(job_id) = queue_rx.recv().await {
-            service_clone.process_job(job_id).await;
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let service = service_clone.clone();
+            
+            let handle = tokio::spawn(async move {
+                service.process_job(job_id).await;
+                // Cleanup handle from map when done
+                service.running_jobs.remove(&job_id);
+                drop(permit);
+            });
+            
+            service_clone.running_jobs.insert(job_id, handle);
         }
     });
 

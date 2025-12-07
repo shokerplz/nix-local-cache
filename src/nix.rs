@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::Local;
 use serde_json::Value;
 use std::process::Stdio;
 use tokio::fs::File;
@@ -36,6 +37,7 @@ pub async fn build_system(
     flake_path: &str,
     host: &str,
     cores: Option<u32>,
+    builders: Option<&str>,
     log_file: &mut File,
 ) -> Result<String> {
     let attr = format!(
@@ -48,6 +50,11 @@ pub async fn build_system(
     if let Some(ref c) = cores_str {
         args.push("--cores");
         args.push(c);
+    }
+
+    if let Some(b) = builders {
+        args.push("--builders");
+        args.push(b);
     }
 
     run_nix_with_logging(&args, log_file).await
@@ -200,7 +207,9 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
         if n == 0 {
             break;
         }
-        log_file.write_all(line.as_bytes()).await?;
+        let timestamp = Local::now().format("%F_%H-%M-%S.%3f");
+        let stamped_line = format!("[{}] {}", timestamp, line);
+        log_file.write_all(stamped_line.as_bytes()).await?;
     }
 
     let status = child.wait().await?;

@@ -31,7 +31,9 @@ pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/build", post(trigger_build))
+        .route("/jobs", get(list_jobs))
         .route("/jobs/:id", get(get_job_status))
+        .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/logs", get(stream_job_logs))
         .route("/logs", get(list_logs))
         .route("/logs/:name", get(get_log))
@@ -46,6 +48,13 @@ async fn health() -> impl IntoResponse {
 
 async fn metrics(State(state): State<Arc<AppState>>) -> String {
     state.metrics_handle.render()
+}
+
+async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut jobs: Vec<_> = state.service.jobs.iter().map(|entry| entry.value().clone()).collect();
+    // Sort by created_at descending
+    jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Json(jobs).into_response()
 }
 
 async fn trigger_build(
@@ -72,6 +81,16 @@ async fn get_job_status(
         Json(job.clone()).into_response()
     } else {
         (StatusCode::NOT_FOUND, "Job not found").into_response()
+    }
+}
+
+async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    match state.service.cancel_job(id).await {
+        Ok(_) => (StatusCode::OK, "Job cancelled").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 
