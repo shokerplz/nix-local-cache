@@ -78,7 +78,7 @@ You can consume this project as a Flake input in your NixOS configuration.
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    nix-local-cache.url = "git+ssh://git@git.ikovalev.nl/nix/nix-local-cache.git";
+    nix-local-cache.url = "git+ssh://gitlab@git.ikovalev.nl/nix/nix-local-cache.git";
   };
 
   outputs = { self, nixpkgs, nix-local-cache, ... }: {
