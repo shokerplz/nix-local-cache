@@ -7,6 +7,7 @@ import { Badge } from '../../components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card'
 import { Loader2, XCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { API_BASE_URL } from '../../lib/config'
 
 export const Route = createFileRoute('/jobs/$id')({
   component: JobDetails,
@@ -19,7 +20,7 @@ function JobDetails() {
   const { data: job, isLoading, refetch } = useQuery({
     queryKey: ['job', id],
     queryFn: async () => {
-      const res = await axios.get(`http://localhost:3000/jobs/${id}`)
+      const res = await axios.get(`${API_BASE_URL}/jobs/${id}`)
       return res.data
     },
     refetchInterval: (query) => {
@@ -30,7 +31,7 @@ function JobDetails() {
 
   const cancelMutation = useMutation({
     mutationFn: async () => {
-      await axios.post(`http://localhost:3000/jobs/${id}/cancel`)
+      await axios.post(`${API_BASE_URL}/jobs/${id}/cancel`)
     },
     onSuccess: () => {
       refetch()
@@ -38,7 +39,7 @@ function JobDetails() {
   })
 
   useEffect(() => {
-    const eventSource = new EventSource(`http://localhost:3000/jobs/${id}/logs`)
+    const eventSource = new EventSource(`${API_BASE_URL}/jobs/${id}/logs`)
     
     eventSource.onmessage = (event) => {
       setLogs(prev => [...prev, event.data])

@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Loader2 } from 'lucide-react'
 import React, { useState } from 'react'
+import { API_BASE_URL } from '../../lib/config'
 
 interface BuildPayload {
   flake_url?: string
@@ -30,7 +31,7 @@ function NewBuild() {
       if (branch) payload.flake_branch = branch
       if (hosts) payload.hosts = hosts.split(',').map(h => h.trim()).filter(h => h.length > 0)
       
-      const res = await axios.post('http://localhost:3000/build', payload)
+      const res = await axios.post(`${API_BASE_URL}/build`, payload)
       return res.data
     },
     onSuccess: (data) => {

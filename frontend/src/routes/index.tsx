@@ -1,20 +1,18 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
-import { Card, CardContent } from '../components/ui/card'
+import { Link } from '@tanstack/react-router'
 import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
-import { Loader2, Plus, Server } from 'lucide-react'
+import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/card'
+import { API_BASE_URL } from '../lib/config'
 
-// Types (should be shared, but defining here for now)
 interface Job {
   id: string
-  hosts: string[]
-  status: "Queued" | "Running" | "Completed" | "Failed" | { Failed: string }
-  created_at: string
-  started_at?: string
-  finished_at?: string
-  flake_ref?: string
+  status: string
+  created_at: number
+  updated_at: number
+  flake_path: string
+  hosts?: string[]
 }
 
 export const Route = createFileRoute('/')({
@@ -22,12 +20,13 @@ export const Route = createFileRoute('/')({
 })
 
 function Dashboard() {
-  const { data: jobs, isLoading, error } = useQuery({
+  const { isPending, error, data } = useQuery({
     queryKey: ['jobs'],
     queryFn: async () => {
-       const res = await axios.get<Job[]>('http://localhost:3000/jobs');
-       return res.data;
-    }
+      const res = await axios.get<Job[]>(`${API_BASE_URL}/jobs`);
+      return res.data;
+    },
+    refetchInterval: 5000,
   })
 
   if (isLoading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>
