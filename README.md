@@ -53,20 +53,20 @@ cargo build -p nix-local-cache-client --release
 
 *   **List builds:**
     ```bash
-nix-local-cache-client list --api http://cache.local:3000
+    nix-local-cache-client list --api http://cache.local:3000
     ```
     Filters builds for the current hostname. Use `--host <name>` to override.
 
 *   **Apply a build:**
     *   **Interactive:**
         ```bash
-nix-local-cache-client apply --api http://cache.local:3000
+        nix-local-cache-client apply --api http://cache.local:3000
         ```
         Shows a TUI list of available builds. Select one to download and switch to it.
 
     *   **Non-interactive:**
         ```bash
-nix-local-cache-client apply <UUID> --yes --api http://cache.local:3000
+        nix-local-cache-client apply <UUID> --yes --api http://cache.local:3000
         ```
 
 ## Installation via Nix Flakes
