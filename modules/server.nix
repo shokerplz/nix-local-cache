@@ -64,6 +64,13 @@ in
     };
     users.groups.nix-local-cache = {};
 
+    # Ensure directories exist with correct permissions
+    systemd.tmpfiles.rules = [
+      "d '${cfg.workingDir}' 0755 nix-local-cache nix-local-cache -"
+      "d '${cfg.workingDir}/cache' 0755 nix-local-cache nix-local-cache -"
+      "d '${cfg.workingDir}/log' 0755 nix-local-cache nix-local-cache -"
+    ];
+
     # Systemd Service
     systemd.services.nix-local-cache-server = {
       description = "Nix Local Cache Server";
