@@ -1,0 +1,17 @@
+[package]
+name = "nix-local-cache-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nix-local-cache-common = { path = "../common" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+hostname = "0.4"
+ratatui = "0.26"
+crossterm = "0.27"
+chrono = "0.4"
+serde = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }

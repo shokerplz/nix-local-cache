@@ -1,6 +1,6 @@
 use crate::config::Settings;
 use crate::nix;
-use crate::types::{BuildRequest, Job, JobStatus};
+use nix_local_cache_common::{BuildRequest, Job, JobStatus};
 use anyhow::Result;
 use chrono::Local;
 use dashmap::DashMap;
@@ -233,6 +233,8 @@ impl BuildService {
 
         let target_hosts = if let Some(h) = req.hosts {
             h
+        } else if let Some(h) = &self.settings.hosts {
+            h.clone()
         } else {
             nix::get_hosts(&flake_ref).await?
         };

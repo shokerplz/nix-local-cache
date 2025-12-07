@@ -1671,7 +1671,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "nix-local-cache"
+name = "nix-local-cache-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "hostname",
+ "nix-local-cache-common",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "nix-local-cache-common"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "nix-local-cache-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1680,15 +1707,12 @@ dependencies = [
  "chrono",
  "clap",
  "config",
- "crossterm",
  "dashmap",
  "futures",
- "hostname",
  "metrics",
  "metrics-exporter-prometheus",
- "ratatui",
+ "nix-local-cache-common",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "sqlx",

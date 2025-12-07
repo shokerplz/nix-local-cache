@@ -19,4 +19,6 @@
     channel = "stable";
     version = "1.90.0";
   };
+  
+  # Optional: Add helper scripts if needed, but cargo handles workspace fine.
 }
