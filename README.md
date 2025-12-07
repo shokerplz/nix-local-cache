@@ -65,6 +65,42 @@ Configuration is handled via `config.toml`, environment variables (`NIX_CACHE_*`
 | **Cache Dir** | `--cache-dir` | `NIX_CACHE_CACHE_DIR` |
 | **Log Dir** | `--log-dir` | `NIX_CACHE_LOG_DIR` |
 
+## Client Usage
+
+The `nix-local-cache-client` binary allows you to list and apply builds on target machines.
+
+### Installation
+
+Build the client:
+```bash
+cargo build --bin client --release
+# Copy target/release/client to your machines (e.g. as nix-local-cache-client)
+```
+
+### Commands
+
+*   **List builds:**
+    ```bash
+    nix-local-cache-client list --api http://cache.local:3000
+    ```
+    Filters builds for the current hostname. Use `--host <name>` to override.
+
+*   **Apply a build:**
+    *   **Interactive:**
+        ```bash
+        nix-local-cache-client apply --api http://cache.local:3000
+        ```
+        Shows a TUI list of available builds. Select one to download and switch to it.
+
+    *   **Non-interactive:**
+        ```bash
+        nix-local-cache-client apply <UUID> --yes --api http://cache.local:3000
+        ```
+
+*   **Configuration:**
+    *   `NIX_LOCAL_CACHE_API`: Server API URL (default: `http://localhost:3000`).
+    *   `NIX_LOCAL_CACHE_URI`: Binary cache URL (default: same as API). Use this if your binary cache is served on a different port/path/domain (e.g. Nginx).
+
 ## API Usage
 
 *   **List Jobs:** `GET /jobs`
