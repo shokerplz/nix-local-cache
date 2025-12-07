@@ -1,5 +1,5 @@
 use crate::service::BuildService;
-use crate::types::BuildRequest;
+use nix_local_cache_common::BuildRequest;
 use axum::{
     extract::{Path, State},
     http::{Method, StatusCode},
@@ -140,7 +140,7 @@ async fn stream_job_logs(
                 // Check if job finished
                 if let Some(current_job) = state.service.jobs.get(&id) {
                     match current_job.status {
-                         crate::types::JobStatus::Completed | crate::types::JobStatus::Failed => {
+                         nix_local_cache_common::JobStatus::Completed | nix_local_cache_common::JobStatus::Failed => {
                              let metadata = file.metadata().await;
                              if let Ok(m) = metadata {
                                  if m.len() <= pos {

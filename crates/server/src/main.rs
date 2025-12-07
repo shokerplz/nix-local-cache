@@ -1,8 +1,14 @@
+mod api;
+mod config;
+mod logging;
+mod nix;
+mod service;
+
 use anyhow::Result;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use nix_local_cache::{api, config, logging, service};
 use std::sync::Arc;
 use tracing::info;
+// use crate::{api, config, logging, service};
 
 #[tokio::main]
 async fn main() -> Result<()> {

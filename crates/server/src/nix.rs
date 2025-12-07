@@ -121,11 +121,6 @@ fn parse_derivation_outputs(json_output: &str) -> Result<Vec<String>> {
     Ok(paths)
 }
 
-pub async fn run_collect_garbage() -> Result<()> {
-    run_nix(&["collect-garbage", "-d"]).await?;
-    Ok(())
-}
-
 async fn run_nix(args: &[&str]) -> Result<String> {
     debug!("Running nix {:?}", args);
     let output = Command::new("nix")
