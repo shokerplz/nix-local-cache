@@ -60,7 +60,12 @@ pub async fn build_system(
     run_nix_with_logging(&args, log_file).await
 }
 
-pub async fn copy_to_cache(paths: &[String], cache_dir: &str, secret_key_file: Option<&str>, log_file: &mut File) -> Result<()> {
+pub async fn copy_to_cache(
+    paths: &[String],
+    cache_dir: &str,
+    secret_key_file: Option<&str>,
+    log_file: &mut File,
+) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
@@ -68,7 +73,7 @@ pub async fn copy_to_cache(paths: &[String], cache_dir: &str, secret_key_file: O
     if let Some(key_file) = secret_key_file {
         dest = format!("{}?secret-key={}", dest, key_file);
     }
-    
+
     // Chunk paths to avoid ARG_MAX issues
     const CHUNK_SIZE: usize = 1000;
     for chunk in paths.chunks(CHUNK_SIZE) {
@@ -202,7 +207,7 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
         if n == 0 {
             break;
         }
-        let timestamp = Local::now().format("%F_%H-%M-%S.%3f");
+        let timestamp = Local::now().format("%F %H:%M:%S.%3f");
         let stamped_line = format!("[{}] {}", timestamp, line);
         log_file.write_all(stamped_line.as_bytes()).await?;
     }
