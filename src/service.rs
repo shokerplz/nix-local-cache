@@ -130,6 +130,7 @@ impl BuildService {
                 finished_at: row.try_get("finished_at")?,
                 log_path: row.try_get("log_path")?,
                 flake_ref: row.try_get("flake_ref")?,
+                results: row.try_get("results").unwrap_or_else(|_| None).and_then(|v: String| serde_json::from_str(&v).ok()),
             };
             jobs.push(job);
         }
@@ -151,10 +152,11 @@ impl BuildService {
     async fn insert_job_into_db(&self, job: &Job) -> Result<()> {
         let hosts_json = sqlx::types::Json(&job.hosts);
         let status = job.status.clone();
+        let results_json = sqlx::types::Json(&job.results);
         sqlx::query!(
             r#"
-            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, results)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             job.id,
             hosts_json,
@@ -164,7 +166,8 @@ impl BuildService {
             job.started_at,
             job.finished_at,
             job.log_path,
-            job.flake_ref
+            job.flake_ref,
+            results_json
         )
         .execute(&self.db_pool)
         .await?;
@@ -174,6 +177,7 @@ impl BuildService {
     async fn update_job_in_db(&self, job: &Job) -> Result<()> {
         let hosts_json = sqlx::types::Json(&job.hosts);
         let status = job.status.clone();
+        let results_json = sqlx::types::Json(&job.results);
         sqlx::query!(
             r#"
             UPDATE jobs
@@ -185,7 +189,8 @@ impl BuildService {
                 started_at = ?,
                 finished_at = ?,
                 log_path = ?,
-                flake_ref = ?
+                flake_ref = ?,
+                results = ?
             WHERE id = ?
             "#,
             hosts_json,
@@ -196,6 +201,7 @@ impl BuildService {
             job.finished_at,
             job.log_path,
             job.flake_ref,
+            results_json,
             job.id
         )
         .execute(&self.db_pool)
@@ -246,6 +252,7 @@ impl BuildService {
             finished_at: None,
             log_path: log_file_name,
             flake_ref,
+            results: Some(std::collections::HashMap::new()),
         };
 
         self.jobs.insert(id, job.clone());
@@ -301,7 +308,7 @@ impl BuildService {
                  // So this check is likely useless inside the task itself.
              }
 
-            if let Err(e) = self.process_host(&host, &flake_ref, &log_full_path).await {
+            if let Err(e) = self.process_host(&host, &flake_ref, &log_full_path, job_id).await {
                 let msg = format!("Job {} failed for host {}: {}", job_id, host, e);
                 error!("{}", msg);
                 status_message = Some(msg);
@@ -410,7 +417,7 @@ impl BuildService {
         }
     }
 
-    async fn process_host(&self, host: &str, flake_ref: &str, log_path: &Path) -> Result<()> {
+    async fn process_host(&self, host: &str, flake_ref: &str, log_path: &Path, job_id: Uuid) -> Result<()> {
         // Use tokio::fs::File for async writing
         let mut log_file = tokio::fs::OpenOptions::new()
             .append(true)
@@ -546,13 +553,38 @@ impl BuildService {
         }
 
         let msg = format!(
-            "[{}] Finished {}\n",
+        "[{}] Finished {}\n",
             Local::now().format("%F_%H-%M-%S.%3f"),
             host
         );
         log_file.write_all(msg.as_bytes()).await?;
 
         self.update_metadata(host, &result_path).await?;
+
+        // Update results in job
+        // Note: we need to lock the job again to update it.
+        if let Some(mut job) = self.jobs.get_mut(&job_id) {
+             if let Some(results) = &mut job.results {
+                 results.insert(host.to_string(), result_path.clone());
+             } else {
+                 let mut map = std::collections::HashMap::new();
+                 map.insert(host.to_string(), result_path.clone());
+                 job.results = Some(map);
+             }
+             // We'll persist this to DB when the job status is updated at the end of process_job
+             // OR we can update it incrementally here.
+             // Let's update incrementally so UI sees it immediately if we wanted to.
+             // But `process_job` logic at the end writes to DB.
+             // However, `process_job` only writes status at the very end.
+             // If we have multiple hosts, we might want to see progress.
+             // For now, let's just update memory, and let the final DB update persist it.
+             // Actually, `process_job` does `self.update_job_in_db(&job)` at the end.
+             // But `job` in `process_job` (the variable) is a *clone* or *ref*?
+             // `process_job` gets `let mut job = self.jobs.get_mut(...)`.
+             // Then it drops it.
+             // Then it iterates hosts.
+             // So we need to re-acquire lock here to update `results`.
+        }
 
         Ok(())
     }

@@ -23,6 +23,8 @@ pub struct Job {
     pub finished_at: Option<DateTime<Local>>,
     pub log_path: String,
     pub flake_ref: String,
+    #[sqlx(json)]
+    pub results: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]

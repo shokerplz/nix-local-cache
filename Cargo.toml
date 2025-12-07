@@ -32,5 +32,11 @@ sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "chrono", "uuid
 tokio-util = { version = "0.7", features = ["io"] }
 sqlx-macros = "0.8.6"
 
+# Client dependencies
+reqwest = { version = "0.11", features = ["json"] }
+hostname = "0.4"
+ratatui = "0.26"
+crossterm = "0.27"
+
 [dev-dependencies]
 tempfile = "3.23.0"
