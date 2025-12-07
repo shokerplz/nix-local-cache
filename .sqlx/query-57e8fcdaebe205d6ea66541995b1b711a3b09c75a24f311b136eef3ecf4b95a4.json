@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE jobs\n            SET\n                hosts = ?,\n                status = ?,\n                status_message = ?,\n                created_at = ?,\n                started_at = ?,\n                finished_at = ?,\n                log_path = ?,\n                flake_ref = ?,\n                results = ?\n            WHERE id = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "57e8fcdaebe205d6ea66541995b1b711a3b09c75a24f311b136eef3ecf4b95a4"
+}
