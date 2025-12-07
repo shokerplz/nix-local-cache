@@ -32,6 +32,12 @@ in
       description = "Nix builders configuration string.";
     };
 
+    secretKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to the secret key file for signing the cache.";
+    };
+
     workingDir = lib.mkOption {
       type = lib.types.path;
       default = "/var/lib/nix-local-cache";
@@ -74,6 +80,8 @@ in
         # NIX_CACHE_META_FILE = "${cfg.workingDir}/metadata.json"; # Optional if code handles default
       } // lib.optionalAttrs (cfg.builders != null) {
         NIX_CACHE_BUILDERS = cfg.builders;
+      } // lib.optionalAttrs (cfg.secretKeyFile != null) {
+        NIX_CACHE_SECRET_KEY_FILE = cfg.secretKeyFile;
       };
 
       serviceConfig = {
