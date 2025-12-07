@@ -12,3 +12,13 @@ devenv.local.yaml
 /target
 
 db.sqlite3
+
+# AI context
+GEMINI.md
+
+# Temporary and Output
+tmp/
+result
+metadata.json
+*.log
+

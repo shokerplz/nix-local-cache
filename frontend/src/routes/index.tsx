@@ -25,15 +25,8 @@ function Dashboard() {
   const { data: jobs, isLoading, error } = useQuery({
     queryKey: ['jobs'],
     queryFn: async () => {
-       const { data: logFiles } = await axios.get<string[]>('http://localhost:3000/logs');
-       const jobIds = logFiles.map(f => f.replace('.log', ''));
-       
-       const jobPromises = jobIds.map(id => 
-         axios.get<Job>(`http://localhost:3000/jobs/${id}`).then(r => r.data).catch(() => null)
-       );
-       
-       const results = await Promise.all(jobPromises);
-       return results.filter(j => j !== null).sort((a, b) => new Date(b!.created_at).getTime() - new Date(a!.created_at).getTime()) as Job[];
+       const res = await axios.get<Job[]>('http://localhost:3000/jobs');
+       return res.data;
     }
   })
 

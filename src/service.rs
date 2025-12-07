@@ -18,6 +18,7 @@ use uuid::Uuid;
 pub struct BuildService {
     pub settings: Settings,
     pub jobs: Arc<DashMap<Uuid, Job>>,
+    pub running_jobs: Arc<DashMap<Uuid, tokio::task::JoinHandle<()>>>,
     queue_tx: mpsc::Sender<Uuid>,
     db_pool: SqlitePool,
 }
@@ -34,6 +35,7 @@ impl BuildService {
         let service = Self {
             settings,
             jobs: Arc::new(DashMap::new()),
+            running_jobs: Arc::new(DashMap::new()),
             queue_tx: tx,
             db_pool,
         };
@@ -61,6 +63,54 @@ impl BuildService {
         self.load_jobs_from_db().await?;
 
         Ok(())
+    }
+
+    pub async fn cancel_job(&self, job_id: Uuid) -> Result<()> {
+        if let Some((_, handle)) = self.running_jobs.remove(&job_id) {
+            handle.abort();
+            info!("Cancelled job {}", job_id);
+            
+            // Update status to failed/cancelled
+             if let Some(mut job) = self.jobs.get_mut(&job_id) {
+                job.status = JobStatus::Failed;
+                job.status_message = Some("Cancelled by user".to_string());
+                job.finished_at = Some(Local::now());
+                
+                // We need to update DB. But we are in async fn, so we can await.
+                // However, we hold a lock on `job`.
+                // Clone needed data and drop lock before await?
+                // Or just use the update helper which takes &Job?
+                // `update_job_in_db` takes &Job.
+                // But we hold the lock on `job` (RefMut).
+                // `update_job_in_db` is async, so we can't await while holding non-async-aware lock if we were using std::sync::Mutex.
+                // But DashMap uses parking_lot (sync). Awaiting while holding it will deadlock if update_job_in_db tries to access dashmap?
+                // No, update_job_in_db only touches DB.
+                // BUT, awaiting while holding a sync lock is bad practice (blocks other threads).
+                // Better: Modify, drop lock, then update DB.
+                let job_clone = job.clone();
+                drop(job);
+                self.update_job_in_db(&job_clone).await?;
+            }
+            Ok(())
+        } else {
+            // Job might be queued but not running yet?
+            // If queued, we should remove it from queue?
+            // MPSC queue doesn't support removal.
+            // But we can mark it as cancelled in DB/Map, and when worker picks it up, it checks status?
+            if let Some(mut job) = self.jobs.get_mut(&job_id) {
+                if matches!(job.status, JobStatus::Queued) {
+                    job.status = JobStatus::Failed;
+                    job.status_message = Some("Cancelled by user".to_string());
+                    job.finished_at = Some(Local::now());
+                    let job_clone = job.clone();
+                    drop(job);
+                    self.update_job_in_db(&job_clone).await?;
+                    info!("Cancelled queued job {}", job_id);
+                    return Ok(());
+                }
+            }
+            Err(anyhow::anyhow!("Job not running or not found"))
+        }
     }
 
     async fn load_jobs_from_db(&self) -> Result<()> {
@@ -206,6 +256,14 @@ impl BuildService {
     }
 
     pub async fn process_job(&self, job_id: Uuid) {
+        // Check if job was cancelled while in queue
+        if let Some(job) = self.jobs.get(&job_id) {
+            if matches!(job.status, JobStatus::Failed) && job.status_message.as_deref() == Some("Cancelled by user") {
+                 info!("Skipping cancelled job {}", job_id);
+                 return;
+            }
+        }
+
         let mut job = match self.jobs.get_mut(&job_id) {
             Some(j) => j,
             None => return,
@@ -235,6 +293,14 @@ impl BuildService {
         let mut success = true;
         let mut status_message: Option<String> = None;
         for host in hosts {
+            // Check for cancellation before processing each host
+            // (Though if cancelled, the task should be aborted, so this might be redundant but safe)
+             if !self.running_jobs.contains_key(&job_id) {
+                 // Actually this check is tricky because we ARE running.
+                 // If we were aborted, we wouldn't be here.
+                 // So this check is likely useless inside the task itself.
+             }
+
             if let Err(e) = self.process_host(&host, &flake_ref, &log_full_path).await {
                 let msg = format!("Job {} failed for host {}: {}", job_id, host, e);
                 error!("{}", msg);
@@ -270,7 +336,7 @@ impl BuildService {
     ) -> Result<String> {
         let mut attempts = 0;
         loop {
-            let res = nix::build_system(flake_ref, host, cores, log_file).await;
+            let res = nix::build_system(flake_ref, host, cores, self.settings.builders.as_deref(), log_file).await;
             match res {
                 Ok(v) => return Ok(v),
                 Err(e) => {

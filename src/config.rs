@@ -17,6 +17,7 @@ pub struct Settings {
     pub arch_cores: HashMap<String, u32>,
     pub secret_key_file: Option<String>,
     pub sqlite_db_path: String,
+    pub builders: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -49,6 +50,14 @@ pub struct Args {
     /// Path to the persistent job database file
     #[arg(long)]
     pub sqlite_db_path: Option<String>,
+
+    /// Nix builders configuration (e.g. "ssh://machine x86_64-linux ...")
+    #[arg(long)]
+    pub builders: Option<String>,
+
+    /// Number of concurrent worker threads processing jobs
+    #[arg(long)]
+    pub worker_threads: Option<usize>,
 }
 
 impl Settings {
@@ -57,7 +66,7 @@ impl Settings {
 
         let mut builder = Config::builder()
             .set_default("port", 3000)?
-            .set_default("worker_threads", 2)?
+            .set_default("worker_threads", 1)?
             .set_default("flake_path", "/home/ikovalev/projects/dotfiles")?
             .set_default("cache_dir", "/mnt/zfs-pool0/nix-cache/cache")?
             .set_default("log_dir", "/mnt/zfs-pool0/nix-local-cache/log")?
@@ -87,6 +96,12 @@ impl Settings {
         }
         if let Some(v) = args.sqlite_db_path {
             builder = builder.set_override("sqlite_db_path", v)?;
+        }
+        if let Some(v) = args.builders {
+            builder = builder.set_override("builders", v)?;
+        }
+        if let Some(v) = args.worker_threads {
+            builder = builder.set_override("worker_threads", v as i64)?;
         }
 
         let mut settings: Self = builder.build()?.try_deserialize()?;
