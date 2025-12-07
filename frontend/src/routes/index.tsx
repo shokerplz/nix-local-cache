@@ -3,16 +3,21 @@ import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
 import { Link } from '@tanstack/react-router'
 import { Badge } from '../components/ui/badge'
-import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/card'
+import { Card, CardContent } from '../components/ui/card'
+import { Button } from '../components/ui/button'
+import { Loader2, Plus, Server } from 'lucide-react'
 import { API_BASE_URL } from '../lib/config'
 
 interface Job {
   id: string
   status: string
   created_at: number
+  started_at?: number
+  finished_at?: number
   updated_at: number
   flake_path: string
-  hosts?: string[]
+  flake_ref?: string
+  hosts: string[]
 }
 
 export const Route = createFileRoute('/')({
@@ -20,7 +25,7 @@ export const Route = createFileRoute('/')({
 })
 
 function Dashboard() {
-  const { isPending, error, data } = useQuery({
+  const { isPending, error, data: jobs } = useQuery({
     queryKey: ['jobs'],
     queryFn: async () => {
       const res = await axios.get<Job[]>(`${API_BASE_URL}/jobs`);
@@ -29,7 +34,7 @@ function Dashboard() {
     refetchInterval: 5000,
   })
 
-  if (isLoading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>
+  if (isPending) return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>
   if (error) return <div className="text-destructive text-center">Error loading jobs. Is the backend running?</div>
 
   return (
