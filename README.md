@@ -69,6 +69,52 @@ nix-local-cache-client apply --api http://cache.local:3000
 nix-local-cache-client apply <UUID> --yes --api http://cache.local:3000
         ```
 
+## Installation via Nix Flakes
+
+You can consume this project as a Flake input in your NixOS configuration.
+
+**flake.nix:**
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nix-local-cache.url = "git+ssh://git@git.ikovalev.nl/nix/nix-local-cache.git";
+  };
+
+  outputs = { self, nixpkgs, nix-local-cache, ... }: {
+    nixosConfigurations.my-server = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        nix-local-cache.nixosModules.server
+      ];
+    };
+  };
+}
+```
+
+**configuration.nix (Server):**
+```nix
+{ config, pkgs, ... }: {
+  services.nix-local-cache-server = {
+    enable = true;
+    port = 3000;
+    workerThreads = 4;
+    builders = "ssh://builder@host x86_64-linux - - 1 8";
+    enableNginx = true;
+    domain = "cache.local";
+  };
+}
+```
+
+**Client Installation:**
+Add to `environment.systemPackages`:
+```nix
+environment.systemPackages = [
+  inputs.nix-local-cache.packages.${pkgs.system}.client
+];
+```
+
 ## Development Workflow
 
 1.  **Workspace:**

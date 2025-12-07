@@ -224,10 +224,10 @@ mod tests {
     #[test]
     fn test_parse_derivation_outputs() {
         let json = r#"{ 
-            \"/nix/store/z...-foo.drv\": { 
-                \"outputs\": { 
-                    \"out\": { \"path\": \"/nix/store/a...-foo\" }, 
-                    \"dev\": { \"path\": \"/nix/store/b...-foo-dev\" } 
+            "/nix/store/z...-foo.drv": { 
+                "outputs": { 
+                    "out": { "path": "/nix/store/a...-foo" }, 
+                    "dev": { "path": "/nix/store/b...-foo-dev" } 
                 } 
             } 
         }"#;
