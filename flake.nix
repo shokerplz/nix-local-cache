@@ -34,7 +34,7 @@
           src = pkgs.lib.cleanSourceWith {
             src = craneLib.path ./.;
             filter = path: type:
-              (craneLib.filterCargoSources path type) || (builtins.match ".*/\\.sqlx.*" path != null);
+              (craneLib.filterCargoSources path type) || (builtins.match ".*/migrations/.*" path != null) || (builtins.match ".*/\\.sqlx.*" path != null);
           };
           strictDeps = true;
           
