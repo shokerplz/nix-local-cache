@@ -27,6 +27,12 @@ impl BuildService {
     pub async fn new(settings: Settings) -> Result<(Self, mpsc::Receiver<Uuid>)> {
         let (tx, rx) = mpsc::channel(100);
         
+        // Ensure DB file exists
+        if !Path::new(&settings.sqlite_db_path).exists() {
+            info!("Database file not found at {}, creating...", settings.sqlite_db_path);
+            File::create(&settings.sqlite_db_path)?;
+        }
+
         let db_pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&format!("sqlite:{}", settings.sqlite_db_path))
