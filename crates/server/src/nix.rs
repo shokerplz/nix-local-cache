@@ -227,6 +227,26 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
     Ok(stdout_result.trim().to_string())
 }
 
+pub fn resolve_flake_ref(url: Option<String>, branch: Option<String>, default_path: &str) -> String {
+    if let Some(mut url) = url {
+        // Basic heuristic to convert SCP-style SSH URLs to Nix syntax
+        // e.g. git@github.com:user/repo.git -> git+ssh://git@github.com/user/repo.git
+        if !url.contains("://") && url.contains('@') {
+            url = format!("git+ssh://{}", url.replace(":", "/"));
+        } else if url.starts_with("https://") && url.ends_with(".git") {
+            url = format!("git+{}", url);
+        }
+
+        if let Some(branch) = branch {
+            format!("{}?ref={}", url, branch)
+        } else {
+            url
+        }
+    } else {
+        default_path.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

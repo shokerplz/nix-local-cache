@@ -1,4 +1,5 @@
 use crate::service::BuildService;
+use crate::nix;
 use nix_local_cache_common::BuildRequest;
 use axum::{
     extract::{Path, Query, State},
@@ -33,6 +34,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/build", post(trigger_build))
+        .route("/flake/hosts", get(get_flake_hosts))
         .route("/jobs", get(list_jobs))
         .route("/jobs/:id", get(get_job_status))
         .route("/jobs/:id/cancel", post(cancel_job))
@@ -51,6 +53,24 @@ async fn health() -> impl IntoResponse {
 
 async fn metrics(State(state): State<Arc<AppState>>) -> String {
     state.metrics_handle.render()
+}
+
+#[derive(Deserialize)]
+struct GetHostsQuery {
+    flake_url: Option<String>,
+    branch: Option<String>,
+}
+
+async fn get_flake_hosts(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<GetHostsQuery>,
+) -> impl IntoResponse {
+    let flake_ref = nix::resolve_flake_ref(query.flake_url, query.branch, &state.service.settings.flake_path);
+
+    match nix::get_hosts(&flake_ref).await {
+        Ok(hosts) => Json(hosts).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {

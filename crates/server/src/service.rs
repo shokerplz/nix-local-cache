@@ -220,23 +220,7 @@ impl BuildService {
         let id = Uuid::new_v4();
 
         // Determine flake reference
-        let flake_ref = if let Some(mut url) = req.flake_url {
-            // Basic heuristic to convert SCP-style SSH URLs to Nix syntax
-            // e.g. git@github.com:user/repo.git -> git+ssh://git@github.com/user/repo.git
-            if !url.contains("://") && url.contains('@') {
-                url = format!("git+ssh://{}", url.replace(":", "/"));
-            } else if url.starts_with("https://") && url.ends_with(".git") {
-                url = format!("git+{}", url);
-            }
-
-            if let Some(branch) = req.flake_branch {
-                format!("{}?ref={}", url, branch)
-            } else {
-                url
-            }
-        } else {
-            self.settings.flake_path.clone()
-        };
+        let flake_ref = nix::resolve_flake_ref(req.flake_url, req.flake_branch, &self.settings.flake_path);
 
         let target_hosts = if let Some(h) = req.hosts {
             h
@@ -446,7 +430,7 @@ impl BuildService {
 
         use tokio::io::AsyncWriteExt;
 
-        let timestamp = Local::now().format("%F_%H-%M-%S.%3f");
+        let timestamp = Local::now().format("%F %H:%M:%S.%3f");
         let msg = format!(
             "[{}] Building NixOS system for {} using {}\n",
             timestamp, host, flake_ref
@@ -475,14 +459,14 @@ impl BuildService {
 
         let msg = format!(
             "[{}] Built system: {}\n",
-            Local::now().format("%F_%H-%M-%S.%3f"),
+            Local::now().format("%F %H:%M:%S.%3f"),
             result_path
         );
         log_file.write_all(msg.as_bytes()).await?;
 
         let msg = format!(
             "[{}] Copying closure to cache...\n",
-            Local::now().format("%F_%H-%M-%S.%3f")
+            Local::now().format("%F %H:%M:%S.%3f")
         );
         log_file.write_all(msg.as_bytes()).await?;
 
@@ -493,7 +477,7 @@ impl BuildService {
 
         let msg = format!(
             "[{}] calculating full closure...\n",
-            Local::now().format("%F_%H-%M-%S.%3f")
+            Local::now().format("%F %H:%M:%S.%3f")
         );
         log_file.write_all(msg.as_bytes()).await?;
 
@@ -548,7 +532,7 @@ impl BuildService {
         if !paths_to_copy.is_empty() {
             let msg = format!(
                 "[{}] Caching {} input paths...\n",
-                Local::now().format("%F_%H-%M-%S.%3f"),
+                Local::now().format("%F %H:%M:%S.%3f"),
                 paths_to_copy.len()
             );
             log_file.write_all(msg.as_bytes()).await?;
@@ -561,7 +545,7 @@ impl BuildService {
         if !paths_to_realise.is_empty() {
             let msg = format!(
                 "[{}] Realising and caching derivation outputs...\n",
-                Local::now().format("%F_%H-%M-%S.%3f")
+                Local::now().format("%F %H:%M:%S.%3f")
             );
             log_file.write_all(msg.as_bytes()).await?;
 
@@ -588,7 +572,7 @@ impl BuildService {
 
         let msg = format!(
         "[{}] Finished {}\n",
-            Local::now().format("%F_%H-%M-%S.%3f"),
+            Local::now().format("%F %H:%M:%S.%3f"),
             host
         );
         log_file.write_all(msg.as_bytes()).await?;
