@@ -35,3 +35,12 @@ pub struct BuildRequest {
     pub flake_url: Option<String>,
     pub flake_branch: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginatedJobs {
+    pub jobs: Vec<Job>,
+    pub total: i64,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+}

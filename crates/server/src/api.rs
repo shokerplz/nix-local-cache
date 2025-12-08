@@ -1,6 +1,6 @@
 use crate::service::BuildService;
 use crate::nix;
-use nix_local_cache_common::{BuildRequest, Job};
+use nix_local_cache_common::{BuildRequest, PaginatedJobs};
 use axum::{
     extract::{Path, Query, State},
     http::{Method, StatusCode},
@@ -84,15 +84,6 @@ struct PaginationQuery {
 
 fn default_page() -> usize { 1 }
 fn default_page_size() -> usize { 10 }
-
-#[derive(Serialize)]
-struct PaginatedJobs {
-    jobs: Vec<Job>,
-    total: i64,
-    page: usize,
-    page_size: usize,
-    total_pages: usize,
-}
 
 async fn list_jobs(
     State(state): State<Arc<AppState>>,

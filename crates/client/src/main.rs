@@ -15,7 +15,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use nix_local_cache_common::Job;
+use nix_local_cache_common::{Job, PaginatedJobs};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -118,8 +118,21 @@ enum Commands {
 }
 
 async fn fetch_compatible_jobs(client: &Client, api: &str, hostname: &str) -> Result<Vec<Job>> {
-    let url = format!("{}/jobs", api);
-    let mut jobs: Vec<Job> = client.get(&url).send().await?.json().await?;
+    let mut jobs = Vec::new();
+    let mut page = 1;
+    let page_size = 50;
+
+    loop {
+        let url = format!("{}/jobs?page={}&page_size={}", api, page, page_size);
+        let response: PaginatedJobs = client.get(&url).send().await?.json().await?;
+        
+        jobs.extend(response.jobs);
+
+        if page >= response.total_pages {
+            break;
+        }
+        page += 1;
+    }
     
     // Filter jobs that have a result for our hostname and are completed
     jobs.retain(|j| {
