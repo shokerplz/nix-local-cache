@@ -41,17 +41,17 @@ function Dashboard() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Builds</h1>
-        <Link to="/build/new">
+        <Link to="/build/new" className="w-full sm:w-auto block">
           <Button className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" /> New Build
           </Button>
         </Link>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-1">
+      <div className="flex flex-col gap-4">
         {jobs?.map((job) => (
-          <Link key={job.id} to="/jobs/$id" params={{ id: job.id }}>
-            <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
+          <Link key={job.id} to="/jobs/$id" params={{ id: job.id }} className="block">
+            <Card className="hover:bg-accent/50 transition-colors cursor-pointer w-full">
               <CardContent className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex-1 space-y-1 w-full min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
