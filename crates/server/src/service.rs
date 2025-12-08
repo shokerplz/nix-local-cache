@@ -134,6 +134,7 @@ impl BuildService {
                 log_path: row.try_get("log_path")?,
                 flake_ref: row.try_get("flake_ref")?,
                 results: row.try_get("results").unwrap_or_else(|_| None).and_then(|v: String| serde_json::from_str(&v).ok()),
+                current_host: row.try_get("current_host")?,
             };
             jobs.push(job);
         }
@@ -158,8 +159,8 @@ impl BuildService {
         let results_json = sqlx::types::Json(&job.results);
         sqlx::query!(
             r#"
-            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, results)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, results, current_host)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             job.id,
             hosts_json,
@@ -170,7 +171,8 @@ impl BuildService {
             job.finished_at,
             job.log_path,
             job.flake_ref,
-            results_json
+            results_json,
+            job.current_host
         )
         .execute(&self.db_pool)
         .await?;
@@ -193,7 +195,8 @@ impl BuildService {
                 finished_at = ?,
                 log_path = ?,
                 flake_ref = ?,
-                results = ?
+                results = ?,
+                current_host = ?
             WHERE id = ?
             "#,
             hosts_json,
@@ -205,6 +208,7 @@ impl BuildService {
             job.log_path,
             job.flake_ref,
             results_json,
+            job.current_host,
             job.id
         )
         .execute(&self.db_pool)
@@ -258,6 +262,7 @@ impl BuildService {
             log_path: log_file_name,
             flake_ref,
             results: Some(std::collections::HashMap::new()),
+            current_host: None,
         };
 
         self.jobs.insert(id, job.clone());
@@ -305,6 +310,15 @@ impl BuildService {
         let mut success = true;
         let mut status_message: Option<String> = None;
         for host in hosts {
+             if let Some(mut job) = self.jobs.get_mut(&job_id) {
+                job.current_host = Some(host.clone());
+                let job_clone = job.clone();
+                drop(job);
+                self.update_job_in_db(&job_clone).await.unwrap_or_else(|e| {
+                    error!("Failed to update job {} current_host: {}", job_id, e);
+                });
+            }
+
             // Check for cancellation before processing each host
             // (Though if cancelled, the task should be aborted, so this might be redundant but safe)
              if !self.running_jobs.contains_key(&job_id) {
@@ -323,6 +337,7 @@ impl BuildService {
 
         let mut job = self.jobs.get_mut(&job_id).unwrap();
         job.finished_at = Some(Local::now());
+        job.current_host = None;
         job.status = if success {
             JobStatus::Completed
         } else {

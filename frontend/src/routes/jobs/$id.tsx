@@ -75,8 +75,29 @@ function JobDetails() {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-            <div>
-              <span className="font-medium">Hosts:</span> {job.hosts.join(', ')}
+            <div className="col-span-1 sm:col-span-2">
+              <span className="font-medium block mb-2">Hosts:</span>
+              <div className="flex flex-wrap gap-2">
+                {job.hosts.map((host: string) => {
+                  const isCompleted = job.results && job.results[host];
+                  const isBuilding = job.current_host === host;
+                  
+                  let variant: "default" | "secondary" | "destructive" | "outline" | "success" | "warning" = 'secondary';
+                  if (isCompleted) variant = 'success';
+                  else if (isBuilding) variant = 'default';
+
+                  return (
+                    <Badge 
+                      key={host} 
+                      variant={variant}
+                      className={isBuilding ? "animate-pulse" : ""}
+                    >
+                      {host}
+                      {isBuilding && <Loader2 className="ml-2 h-3 w-3 animate-spin" />}
+                    </Badge>
+                  );
+                })}
+              </div>
             </div>
             <div>
               <span className="font-medium">Started:</span> {new Date(job.created_at).toLocaleString()}

@@ -26,6 +26,7 @@ pub struct Job {
     pub flake_ref: String,
     #[cfg_attr(feature = "db", sqlx(json))]
     pub results: Option<std::collections::HashMap<String, String>>,
+    pub current_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
