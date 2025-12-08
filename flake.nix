@@ -8,7 +8,6 @@
     # For building Rust (highly recommended over raw rustPlatform for workspaces)
     crane = {
       url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     
     # Rust toolchain overlay (needed for crane sometimes, or just good practice)
@@ -37,6 +36,10 @@
               (craneLib.filterCargoSources path type) || (builtins.match ".*/migrations/.*" path != null) || (builtins.match ".*/\\.sqlx.*" path != null);
           };
           strictDeps = true;
+          
+          # Explicitly set package metadata for crane
+          pname = "nix-local-cache";
+          version = "0.1.0";
           
           buildInputs = [
             pkgs.openssl
