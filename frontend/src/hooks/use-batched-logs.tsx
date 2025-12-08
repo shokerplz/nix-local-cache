@@ -31,11 +31,13 @@ export function useBatchedLogs(jobId: string, isJobRunning: boolean) {
 
     // Load a batch of logs
     const loadBatch = useCallback(async (fromLine: number, tail: boolean = false) => {
-        if (state.loadedRanges.has(fromLine) && !tail) {
-            return
-        }
-
-        setState(prev => ({ ...prev, isLoading: true }))
+        // Check if already loaded using functional update to get current state
+        setState(prev => {
+            if (prev.loadedRanges.has(fromLine) && !tail) {
+                return prev // Don't start loading if already loaded
+            }
+            return { ...prev, isLoading: true }
+        })
 
         try {
             const params = new URLSearchParams({
@@ -51,6 +53,11 @@ export function useBatchedLogs(jobId: string, isJobRunning: boolean) {
             const batch = response.data
 
             setState(prev => {
+                // Skip if already loaded (race condition check)
+                if (prev.loadedRanges.has(batch.from_line) && !tail) {
+                    return { ...prev, isLoading: false }
+                }
+
                 const newLoadedRanges = new Set(prev.loadedRanges)
                 newLoadedRanges.add(batch.from_line)
 
@@ -90,12 +97,12 @@ export function useBatchedLogs(jobId: string, isJobRunning: boolean) {
             console.error('Failed to load log batch:', error)
             setState(prev => ({ ...prev, isLoading: false }))
         }
-    }, [jobId, state.loadedRanges])
+    }, [jobId]) // Only depend on jobId, not state
 
     // Initial load - get the tail
     useEffect(() => {
         loadBatch(0, true)
-    }, [jobId])
+    }, [loadBatch])
 
     // Setup SSE for running jobs
     useEffect(() => {
@@ -121,16 +128,26 @@ export function useBatchedLogs(jobId: string, isJobRunning: boolean) {
 
     // Load more when scrolling to top
     const loadMoreAbove = useCallback(() => {
-        if (state.isLoading || !state.hasMore) {
-            return
-        }
+        setState(prev => {
+            if (prev.isLoading || !prev.hasMore) {
+                return prev
+            }
 
-        // Calculate the next batch to load
-        const earliestLoadedLine = Math.min(...Array.from(state.loadedRanges))
-        const nextFromLine = Math.max(0, earliestLoadedLine - BATCH_SIZE)
+            // Calculate the next batch to load
+            const rangesArray = Array.from(prev.loadedRanges)
+            if (rangesArray.length === 0) {
+                return prev
+            }
 
-        loadBatch(nextFromLine, false)
-    }, [state.isLoading, state.hasMore, state.loadedRanges, loadBatch])
+            const earliestLoadedLine = Math.min(...rangesArray)
+            const nextFromLine = Math.max(0, earliestLoadedLine - BATCH_SIZE)
+
+            // Trigger load asynchronously
+            loadBatch(nextFromLine, false)
+
+            return prev
+        })
+    }, [loadBatch])
 
     // Combine historical and live lines
     const allLines = [...state.lines, ...liveLines]
