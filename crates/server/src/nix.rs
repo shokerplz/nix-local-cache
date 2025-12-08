@@ -84,7 +84,9 @@ pub async fn copy_to_cache(
     Ok(())
 }
 pub async fn query_requisites(path: &str) -> Result<Vec<String>> {
-    let output = run_nix_store(&["--query", "--requisites", "--include-outputs", path]).await?;
+    let output = run_nix_store(&["--query", "--requisites", "--include-outputs", path])
+        .await
+        .context(format!("Failed to query requisites for path: {}", path))?;
     Ok(output.lines().map(String::from).collect())
 }
 
@@ -104,8 +106,11 @@ pub async fn realise(paths: &[String], log_file: &mut File) -> Result<()> {
 
 pub async fn get_derivation_outputs(drv_path: &str) -> Result<Vec<String>> {
     // nix derivation show "$path" | jq -r '.[].outputs[].path'
-    let output = run_nix(&["derivation", "show", drv_path]).await?;
+    let output = run_nix(&["derivation", "show", drv_path])
+        .await
+        .context(format!("Failed to get derivation outputs for: {}", drv_path))?;
     parse_derivation_outputs(&output)
+        .context(format!("Failed to parse derivation outputs for: {}", drv_path))
 }
 
 fn parse_derivation_outputs(json_output: &str) -> Result<Vec<String>> {
@@ -132,11 +137,11 @@ async fn run_nix(args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .await
-        .context("Failed to execute nix command")?;
+        .context(format!("Failed to execute nix command: nix {}", args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("Nix command failed: {}", stderr));
+        return Err(anyhow!("Command 'nix {}' failed: {}", args.join(" "), stderr));
     }
 
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
@@ -148,11 +153,11 @@ async fn run_nix_store(args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .await
-        .context("Failed to execute nix-store command")?;
+        .context(format!("Failed to execute nix-store command: nix-store {}", args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("nix-store command failed: {}", stderr));
+        return Err(anyhow!("Command 'nix-store {}' failed: {}", args.join(" "), stderr));
     }
 
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
@@ -216,7 +221,7 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
     let stdout_result = stdout_handle.await??;
 
     if !status.success() {
-        return Err(anyhow!("Command {} failed", cmd_name));
+        return Err(anyhow!("Command '{} {}' failed with exit code: {:?}", cmd_name, args.join(" "), status.code()));
     }
 
     Ok(stdout_result.trim().to_string())
