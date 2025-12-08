@@ -2,7 +2,10 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+use ts_rs::TS;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
 #[cfg_attr(feature = "db", derive(sqlx::Type), sqlx(type_name = "TEXT"))]
 pub enum JobStatus {
     Queued,
@@ -11,7 +14,8 @@ pub enum JobStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[cfg_attr(feature = "db", derive(sqlx::FromRow))]
 pub struct Job {
     pub id: Uuid,
@@ -29,14 +33,16 @@ pub struct Job {
     pub current_host: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[ts(export)]
 pub struct BuildRequest {
     pub hosts: Option<Vec<String>>,
     pub flake_url: Option<String>,
     pub flake_branch: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct PaginatedJobs {
     pub jobs: Vec<Job>,
     pub total: i64,

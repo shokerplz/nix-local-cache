@@ -17,7 +17,8 @@ async fn main() -> Result<()> {
     let settings = config::Settings::new()?;
     info!("Configuration loaded");
 
-    let (service_instance, mut queue_rx) = service::BuildService::new(settings.clone()).await?;
+    let nix_ops = Arc::new(nix::RealNixOps);
+    let (service_instance, mut queue_rx) = service::BuildService::new(settings.clone(), nix_ops).await?;
     let service = Arc::new(service_instance);
     service.init().await?;
 

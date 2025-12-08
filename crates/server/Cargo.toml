@@ -29,9 +29,10 @@ metrics = "0.24.3"
 metrics-exporter-prometheus = "0.18.0"
 async-stream = "0.3.6"
 tokio-stream = "0.1.17"
-sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "json"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "json", "macros"] }
 tokio-util = { version = "0.7", features = ["io"] }
-sqlx-macros = "0.8.6"
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3.23.0"
+mockall = "0.11"

@@ -68,8 +68,8 @@ async fn get_flake_hosts(
 ) -> impl IntoResponse {
     let flake_ref = nix::resolve_flake_ref(query.flake_url, query.branch, &state.service.settings.flake_path);
 
-    match nix::get_hosts(&flake_ref).await {
-        Ok(hosts) => Json(hosts).into_response(),
+    match state.service.get_hosts(&flake_ref).await {
+        Ok(hosts) => Json::<Vec<String>>(hosts).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -289,7 +289,10 @@ async fn stream_job_logs(
             };
 
             let mut interval = tokio::time::interval(Duration::from_secs(1));
-            let mut pos = 0;
+            let mut pos = match file.metadata().await {
+                Ok(m) => m.len(),
+                Err(_) => 0,
+            };
 
             loop {
                 interval.tick().await;

@@ -21,10 +21,11 @@ pub struct BuildService {
     pub running_jobs: Arc<DashMap<Uuid, tokio::task::JoinHandle<()>>>,
     queue_tx: mpsc::Sender<Uuid>,
     db_pool: SqlitePool,
+    nix_ops: Arc<dyn crate::nix::NixOps>,
 }
 
 impl BuildService {
-    pub async fn new(settings: Settings) -> Result<(Self, mpsc::Receiver<Uuid>)> {
+    pub async fn new(settings: Settings, nix_ops: Arc<dyn crate::nix::NixOps>) -> Result<(Self, mpsc::Receiver<Uuid>)> {
         let (tx, rx) = mpsc::channel(100);
         
         // Ensure DB file exists
@@ -44,6 +45,7 @@ impl BuildService {
             running_jobs: Arc::new(DashMap::new()),
             queue_tx: tx,
             db_pool,
+            nix_ops,
         };
         Ok((service, rx))
     }
@@ -70,12 +72,10 @@ impl BuildService {
 
     pub async fn restart_job(&self, job_id: Uuid) -> Result<()> {
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
-            // Only allow restarting failed jobs
             if !matches!(job.status, JobStatus::Failed) {
                  return Err(anyhow::anyhow!("Only failed jobs can be restarted"));
             }
 
-            // Reset job state
             job.status = JobStatus::Queued;
             job.status_message = None;
             job.started_at = None;
@@ -83,12 +83,11 @@ impl BuildService {
             job.current_host = None;
             job.results = Some(std::collections::HashMap::new());
 
-            // Truncate log file
             let log_path = Path::new(&self.settings.log_dir).join(&job.log_path);
             File::create(&log_path)?; 
 
             let job_clone = job.clone();
-            drop(job); // Release lock before async operations
+            drop(job);
 
             self.update_job_in_db(&job_clone).await?;
             self.queue_tx.send(job_id).await?;
@@ -105,33 +104,8 @@ impl BuildService {
             handle.abort();
             info!("Cancelled job {}", job_id);
             
-            // Update status to failed/cancelled
-             if let Some(mut job) = self.jobs.get_mut(&job_id) {
-                job.status = JobStatus::Failed;
-                job.status_message = Some("Cancelled by user".to_string());
-                job.finished_at = Some(Local::now());
-                
-                // We need to update DB. But we are in async fn, so we can await.
-                // However, we hold a lock on `job`.
-                // Clone needed data and drop lock before await?
-                // Or just use the update helper which takes &Job?
-                // `update_job_in_db` takes &Job.
-                // But we hold the lock on `job` (RefMut).
-                // `update_job_in_db` is async, so we can't await while holding non-async-aware lock if we were using std::sync::Mutex.
-                // But DashMap uses parking_lot (sync). Awaiting while holding it will deadlock if update_job_in_db tries to access dashmap?
-                // No, update_job_in_db only touches DB.
-                // BUT, awaiting while holding a sync lock is bad practice (blocks other threads).
-                // Better: Modify, drop lock, then update DB.
-                let job_clone = job.clone();
-                drop(job);
-                self.update_job_in_db(&job_clone).await?;
-            }
             Ok(())
         } else {
-            // Job might be queued but not running yet?
-            // If queued, we should remove it from queue?
-            // MPSC queue doesn't support removal.
-            // But we can mark it as cancelled in DB/Map, and when worker picks it up, it checks status?
             if let Some(mut job) = self.jobs.get_mut(&job_id) {
                 if matches!(job.status, JobStatus::Queued) {
                     job.status = JobStatus::Failed;
@@ -172,7 +146,6 @@ impl BuildService {
         }
 
         for mut job in jobs {
-            // If job was Running when we crashed, mark it Failed
             if matches!(job.status, JobStatus::Running) {
                 job.status = JobStatus::Failed;
                 job.status_message = Some("Interrupted by service restart".to_string());
@@ -280,10 +253,13 @@ impl BuildService {
         Ok((jobs, total_count))
     }
 
+    pub async fn get_hosts(&self, flake_ref: &str) -> Result<Vec<String>> {
+        self.nix_ops.get_hosts(flake_ref).await
+    }
+
     pub async fn submit_build(&self, req: BuildRequest) -> Result<Uuid> {
         let id = Uuid::new_v4();
 
-        // Determine flake reference
         let flake_ref = nix::resolve_flake_ref(req.flake_url, req.flake_branch, &self.settings.flake_path);
 
         let target_hosts = if let Some(h) = req.hosts {
@@ -291,7 +267,7 @@ impl BuildService {
         } else if let Some(h) = &self.settings.hosts {
             h.clone()
         } else {
-            nix::get_hosts(&flake_ref).await?
+            self.nix_ops.get_hosts(&flake_ref).await?
         };
 
         let log_file_name = format!("{}.log", id);
@@ -321,7 +297,6 @@ impl BuildService {
     }
 
     pub async fn process_job(&self, job_id: Uuid) {
-        // Check if job was cancelled while in queue
         if let Some(job) = self.jobs.get(&job_id) {
             if matches!(job.status, JobStatus::Failed) && job.status_message.as_deref() == Some("Cancelled by user") {
                  info!("Skipping cancelled job {}", job_id);
@@ -336,17 +311,17 @@ impl BuildService {
 
         job.status = JobStatus::Running;
         job.started_at = Some(Local::now());
-        
-        // Update in DB before releasing lock for long operations
-        self.update_job_in_db(&job).await.unwrap_or_else(|e| {
-            error!("Failed to update job {} in DB: {}", job_id, e);
-        });
 
-        // Release lock before long operation
-        let hosts = job.hosts.clone();
-        let log_path_str = job.log_path.clone();
-        let flake_ref = job.flake_ref.clone();
+        let job_data = job.clone();
         drop(job);
+
+        if let Err(e) = self.update_job_in_db(&job_data).await {
+            error!("Failed to update job {} in DB: {}", job_id, e);
+        }
+
+        let hosts = job_data.hosts.clone();
+        let log_path_str = job_data.log_path.clone();
+        let flake_ref = job_data.flake_ref.clone();
 
         let log_full_path = Path::new(&self.settings.log_dir).join(&log_path_str);
 
@@ -362,17 +337,14 @@ impl BuildService {
                 job.current_host = Some(host.clone());
                 let job_clone = job.clone();
                 drop(job);
-                self.update_job_in_db(&job_clone).await.unwrap_or_else(|e| {
+                if let Err(e) = self.update_job_in_db(&job_clone).await {
                     error!("Failed to update job {} current_host: {}", job_id, e);
-                });
+                }
             }
 
             // Check for cancellation before processing each host
             // (Though if cancelled, the task should be aborted, so this might be redundant but safe)
              if !self.running_jobs.contains_key(&job_id) {
-                 // Actually this check is tricky because we ARE running.
-                 // If we were aborted, we wouldn't be here.
-                 // So this check is likely useless inside the task itself.
              }
 
             if let Err(e) = self.process_host(&host, &flake_ref, &log_full_path, job_id).await {
@@ -383,7 +355,13 @@ impl BuildService {
             }
         }
 
-        let mut job = self.jobs.get_mut(&job_id).unwrap();
+        let mut job = match self.jobs.get_mut(&job_id) {
+            Some(j) => j,
+            None => {
+                error!("Job {} disappeared from memory while processing!", job_id);
+                return;
+            }
+        };
         job.finished_at = Some(Local::now());
         job.current_host = None;
         job.status = if success {
@@ -395,13 +373,15 @@ impl BuildService {
 
         info!("Job {} finished with status {:?}", job_id, job.status);
         
+        let job_data = job.clone();
+        drop(job);
+
         // Update in DB after job is finished
-        self.update_job_in_db(&job).await.unwrap_or_else(|e| {
+        if let Err(e) = self.update_job_in_db(&job_data).await {
             error!("Failed to update job {} in DB: {}", job_id, e);
-        });
+        }
     }
 
-    // Helper to avoid closure borrowing issues
     async fn build_with_retry(
         &self,
         flake_ref: &str,
@@ -411,7 +391,7 @@ impl BuildService {
     ) -> Result<String> {
         let mut attempts = 0;
         loop {
-            let res = nix::build_system(flake_ref, host, cores, self.settings.builders.as_deref(), log_file).await;
+            let res = self.nix_ops.build_system(flake_ref, host, cores, self.settings.builders.as_deref(), log_file).await;
             match res {
                 Ok(v) => return Ok(v),
                 Err(e) => {
@@ -436,8 +416,7 @@ impl BuildService {
     async fn copy_with_retry(&self, paths: Vec<String>, log_file: &mut tokio::fs::File) -> Result<()> {
         let mut attempts = 0;
         loop {
-            // Clone paths for the attempt
-            let res = nix::copy_to_cache(&paths, &self.settings.cache_dir, self.settings.secret_key_file.as_deref(), log_file).await;
+            let res = self.nix_ops.copy_to_cache(&paths, &self.settings.cache_dir, self.settings.secret_key_file.as_deref(), log_file).await;
             match res {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -463,7 +442,7 @@ impl BuildService {
     ) -> Result<()> {
         let mut attempts = 0;
         loop {
-            let res = nix::realise(&paths, log_file).await;
+            let res = self.nix_ops.realise(&paths, log_file).await;
             match res {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -486,7 +465,6 @@ impl BuildService {
     }
 
     async fn process_host(&self, host: &str, flake_ref: &str, log_path: &Path, job_id: Uuid) -> Result<()> {
-        // Use tokio::fs::File for async writing
         let mut log_file = tokio::fs::OpenOptions::new()
             .append(true)
             .open(log_path)
@@ -502,12 +480,12 @@ impl BuildService {
         info!("{}", msg.trim());
         log_file.write_all(msg.as_bytes()).await?;
 
-        let arch = nix::get_system_arch(flake_ref, host).await?;
+        let arch = self.nix_ops.get_system_arch(flake_ref, host).await?;
 
-        // Use configured cores or default
+
+
         let cores = self.settings.arch_cores.get(&arch).copied();
 
-        // Manual retry loop to satisfy borrow checker
         let result_path = match self
             .build_with_retry(flake_ref, host, cores, &mut log_file)
             .await
@@ -537,7 +515,7 @@ impl BuildService {
         self.copy_with_retry(vec![result_path.clone()], &mut log_file)
             .await?;
 
-        let drv_path = nix::get_drv_path(flake_ref, host).await?;
+        let drv_path = self.nix_ops.get_drv_path(flake_ref, host).await?;
 
         let msg = format!(
             "[{}] calculating full closure...\n",
@@ -545,15 +523,14 @@ impl BuildService {
         );
         log_file.write_all(msg.as_bytes()).await?;
 
-        let requisites = nix::query_requisites(&drv_path)
+        let requisites = self.nix_ops.query_requisites(&drv_path)
             .await
             .context(format!("Failed to query requisites for derivation: {}", drv_path))?;
 
-        // First pass: identify all derivation outputs
         let mut all_outputs = std::collections::HashSet::new();
         for path in &requisites {
             if path.ends_with(".drv") {
-                let outputs = nix::get_derivation_outputs(path)
+                let outputs = self.nix_ops.get_derivation_outputs(path)
                     .await
                     .context(format!("Failed to get outputs for derivation in first pass: {}", path))
                     .unwrap_or_default();
@@ -561,7 +538,6 @@ impl BuildService {
             }
         }
 
-        // Second pass: batch paths for copying, skipping outputs
         let mut paths_to_copy = Vec::new();
         let mut paths_to_realise = Vec::new();
         let mut outputs_to_copy = Vec::new();
@@ -570,13 +546,12 @@ impl BuildService {
             let hash = get_hash(&path).unwrap_or("");
             let narinfo = Path::new(&self.settings.cache_dir).join(format!("{}.narinfo", hash));
 
-            // Skip outputs - they'll be handled after realisation
             if !all_outputs.contains(&path) && !narinfo.exists() {
                 paths_to_copy.push(path.clone());
             }
 
             if path.ends_with(".drv") {
-                let outputs = nix::get_derivation_outputs(&path)
+                let outputs = self.nix_ops.get_derivation_outputs(&path)
                     .await
                     .context(format!("Failed to get outputs for derivation in second pass: {}", path))
                     .unwrap_or_default();
@@ -642,8 +617,6 @@ impl BuildService {
         log_file.write_all(msg.as_bytes()).await?;
 
 
-        // Update results in job
-        // Note: we need to lock the job again to update it.
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
              if let Some(results) = &mut job.results {
                  results.insert(host.to_string(), result_path.clone());
@@ -652,19 +625,6 @@ impl BuildService {
                  map.insert(host.to_string(), result_path.clone());
                  job.results = Some(map);
              }
-             // We'll persist this to DB when the job status is updated at the end of process_job
-             // OR we can update it incrementally here.
-             // Let's update incrementally so UI sees it immediately if we wanted to.
-             // But `process_job` logic at the end writes to DB.
-             // However, `process_job` only writes status at the very end.
-             // If we have multiple hosts, we might want to see progress.
-             // For now, let's just update memory, and let the final DB update persist it.
-             // Actually, `process_job` does `self.update_job_in_db(&job)` at the end.
-             // But `job` in `process_job` (the variable) is a *clone* or *ref*?
-             // `process_job` gets `let mut job = self.jobs.get_mut(...)`.
-             // Then it drops it.
-             // Then it iterates hosts.
-             // So we need to re-acquire lock here to update `results`.
         }
 
         Ok(())
@@ -685,8 +645,9 @@ mod tests {
     use super::*;
     use crate::config::Settings;
     use tempfile::tempdir;
+    use crate::nix::MockNixOps;
 
-    async fn create_test_service() -> (BuildService, mpsc::Receiver<Uuid>, tempfile::TempDir) {
+    async fn create_test_service(nix_ops: Arc<MockNixOps>) -> (BuildService, mpsc::Receiver<Uuid>, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let cache_dir = temp_dir.path().join("cache");
@@ -707,14 +668,15 @@ mod tests {
             builders: None,
         };
 
-        let (service, rx) = BuildService::new(settings).await.unwrap();
+        let (service, rx) = BuildService::new(settings, nix_ops).await.unwrap();
         service.init().await.unwrap();
         (service, rx, temp_dir)
     }
 
     #[tokio::test]
     async fn test_restart_failed_job() {
-        let (service, _rx, _temp_dir) = create_test_service().await;
+        let mock_nix = Arc::new(MockNixOps::new());
+        let (service, _rx, _temp_dir) = create_test_service(mock_nix).await;
 
         // Create a fake job
         let job_id = Uuid::new_v4();
@@ -759,5 +721,63 @@ mod tests {
             .unwrap();
             
         assert_eq!(saved_job.status, JobStatus::Queued);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_job_lifecycle_success() {
+        let mut mock_nix = MockNixOps::new();
+
+        // Setup expectations
+        mock_nix.expect_get_system_arch()
+            .returning(|_, _| Box::pin(async { Ok("x86_64-linux".to_string()) }));
+        
+        mock_nix.expect_build_system()
+            .returning(|_, _, _, _, _| Box::pin(async { Ok("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-result".to_string()) }));
+            
+        mock_nix.expect_copy_to_cache()
+            .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+            
+        mock_nix.expect_get_drv_path()
+            .returning(|_, _| Box::pin(async { Ok("/nix/store/dddddddddddddddddddddddddddddddd-foo.drv".to_string()) }));
+            
+        mock_nix.expect_query_requisites()
+            .returning(|_| Box::pin(async { Ok(vec!["/nix/store/dddddddddddddddddddddddddddddddd-foo.drv".to_string()]) }));
+            
+        mock_nix.expect_get_derivation_outputs()
+            .returning(|_| Box::pin(async { Ok(vec!["/nix/store/oooooooooooooooooooooooooooooooo-out".to_string()]) }));
+            
+        mock_nix.expect_realise()
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+
+        let mock_nix = Arc::new(mock_nix);
+        let (service, mut rx, _temp_dir) = create_test_service(mock_nix.clone()).await;
+        
+        // Submit job
+        let req = BuildRequest {
+            hosts: Some(vec!["host1".to_string()]),
+            flake_url: Some("github:owner/repo".to_string()),
+            flake_branch: None,
+        };
+        let job_id = service.submit_build(req).await.unwrap();
+
+        // Verify queued
+        // Verify queued
+        {
+            let job = service.jobs.get(&job_id).unwrap();
+            assert_eq!(job.status, JobStatus::Queued);
+        } // Lock dropped here
+
+        // Process job (simulate worker)
+        // First, receive from queue
+        let received_id = rx.recv().await.unwrap();
+        assert_eq!(received_id, job_id);
+        
+        service.process_job(job_id).await;
+
+        // Verify completed
+        let job = service.jobs.get(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Completed);
+        assert!(job.results.is_some());
+        assert_eq!(job.results.as_ref().unwrap().get("host1").unwrap(), "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-result");
     }
 }

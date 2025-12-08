@@ -8,6 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/ca
 import { Loader2, XCircle, RotateCcw } from 'lucide-react'
 import { API_BASE_URL } from '../../lib/config'
 import { useBatchedLogs } from '../../hooks/use-batched-logs'
+import type { Job } from '../../lib/types'
 
 export const Route = createFileRoute('/jobs/$id')({
   component: JobDetails,
@@ -19,12 +20,12 @@ function JobDetails() {
   const { data: job, isLoading, refetch } = useQuery({
     queryKey: ['job', id],
     queryFn: async () => {
-      const res = await axios.get(`${API_BASE_URL}/jobs/${id}`)
+      const res = await axios.get<Job>(`${API_BASE_URL}/jobs/${id}`)
       return res.data
     },
     refetchInterval: (query) => {
       const status = query.state.data?.status
-      return (status === 'Completed' || status?.Failed) ? false : 1000
+      return (status === 'Completed' || status === 'Failed') ? false : 1000
     }
   })
 
@@ -102,14 +103,14 @@ function JobDetails() {
                 {job.hosts.map((host: string) => {
                   const isCompleted = job.results && job.results[host];
                   const isBuilding = job.current_host === host;
-                  
+
                   let variant: "default" | "secondary" | "destructive" | "outline" | "success" | "warning" = 'secondary';
                   if (isCompleted) variant = 'success';
                   else if (isBuilding) variant = 'default';
 
                   return (
-                    <Badge 
-                      key={host} 
+                    <Badge
+                      key={host}
                       variant={variant}
                       className={isBuilding ? "animate-pulse" : ""}
                     >

@@ -6,111 +6,134 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tracing::debug;
+use async_trait::async_trait;
 
-pub async fn get_hosts(flake_path: &str) -> Result<Vec<String>> {
-    let expr = format!(
-        "let f = builtins.getFlake (toString {}); in builtins.concatStringsSep \" \" (builtins.attrNames f.nixosConfigurations)",
-        flake_path
-    );
-
-    let output = run_nix(&["eval", "--impure", "--raw", "--expr", &expr]).await?;
-    Ok(output.split_whitespace().map(String::from).collect())
+#[async_trait]
+#[cfg_attr(test, mockall::automock)]
+pub trait NixOps: Send + Sync {
+    async fn get_hosts(&self, flake_path: &str) -> Result<Vec<String>>;
+    async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String>;
+    async fn get_drv_path(&self, flake_path: &str, host: &str) -> Result<String>;
+    async fn build_system(&self, flake_path: &str, host: &str, cores: Option<u32>, builders: Option<&str>, log_file: &mut File) -> Result<String>;
+    async fn copy_to_cache(&self, paths: &[String], cache_dir: &str, secret_key_file: Option<&str>, log_file: &mut File) -> Result<()>;
+    async fn query_requisites(&self, path: &str) -> Result<Vec<String>>;
+    async fn realise(&self, paths: &[String], log_file: &mut File) -> Result<()>;
+    async fn get_derivation_outputs(&self, drv_path: &str) -> Result<Vec<String>>;
 }
 
-pub async fn get_system_arch(flake_path: &str, host: &str) -> Result<String> {
-    let attr = format!(
-        "{}#nixosConfigurations.{}.config.nixpkgs.system",
-        flake_path, host
-    );
-    run_nix(&["eval", "--raw", &attr]).await
-}
+#[derive(Clone)]
+pub struct RealNixOps;
 
-pub async fn get_drv_path(flake_path: &str, host: &str) -> Result<String> {
-    let attr = format!(
-        "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-        flake_path, host
-    );
-    run_nix(&["eval", "--raw", &attr]).await
-}
+#[async_trait]
+impl NixOps for RealNixOps {
+    async fn get_hosts(&self, flake_path: &str) -> Result<Vec<String>> {
+        let expr = format!(
+            "let f = builtins.getFlake (toString {}); in builtins.concatStringsSep \" \" (builtins.attrNames f.nixosConfigurations)",
+            flake_path
+        );
 
-pub async fn build_system(
-    flake_path: &str,
-    host: &str,
-    cores: Option<u32>,
-    builders: Option<&str>,
-    log_file: &mut File,
-) -> Result<String> {
-    let attr = format!(
-        "{}#nixosConfigurations.{}.config.system.build.toplevel",
-        flake_path, host
-    );
-    let mut args = vec!["build", &attr, "--print-out-paths", "--print-build-logs"];
-
-    let cores_str = cores.map(|c| c.to_string());
-    if let Some(ref c) = cores_str {
-        args.push("--cores");
-        args.push(c);
+        let output = run_nix(&["eval", "--impure", "--raw", "--expr", &expr]).await?;
+        Ok(output.split_whitespace().map(String::from).collect())
     }
 
-    if let Some(b) = builders {
-        args.push("--builders");
-        args.push(b);
+    async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String> {
+        let attr = format!(
+            "{}#nixosConfigurations.{}.config.nixpkgs.system",
+            flake_path, host
+        );
+        run_nix(&["eval", "--raw", &attr]).await
     }
 
-    run_nix_with_logging(&args, log_file).await
-}
-
-pub async fn copy_to_cache(
-    paths: &[String],
-    cache_dir: &str,
-    secret_key_file: Option<&str>,
-    log_file: &mut File,
-) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut dest = format!("file://{}", cache_dir);
-    if let Some(key_file) = secret_key_file {
-        dest = format!("{}?secret-key={}", dest, key_file);
+    async fn get_drv_path(&self, flake_path: &str, host: &str) -> Result<String> {
+        let attr = format!(
+            "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
+            flake_path, host
+        );
+        run_nix(&["eval", "--raw", &attr]).await
     }
 
-    // Chunk paths to avoid ARG_MAX issues
-    const CHUNK_SIZE: usize = 1000;
-    for chunk in paths.chunks(CHUNK_SIZE) {
-        let mut args = vec!["copy", "--to", &dest];
-        args.extend(chunk.iter().map(|s| s.as_str()));
-        run_nix_with_logging(&args, log_file).await?;
-    }
-    Ok(())
-}
-pub async fn query_requisites(path: &str) -> Result<Vec<String>> {
-    let output = run_nix_store(&["--query", "--requisites", "--include-outputs", path])
-        .await
-        .context(format!("Failed to query requisites for path: {}", path))?;
-    Ok(output.lines().map(String::from).collect())
-}
+    async fn build_system(
+        &self,
+        flake_path: &str,
+        host: &str,
+        cores: Option<u32>,
+        builders: Option<&str>,
+        log_file: &mut File,
+    ) -> Result<String> {
+        let attr = format!(
+            "{}#nixosConfigurations.{}.config.system.build.toplevel",
+            flake_path, host
+        );
+        let mut args = vec!["build", &attr, "--print-out-paths", "--print-build-logs"];
 
-pub async fn realise(paths: &[String], log_file: &mut File) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
+        let cores_str = cores.map(|c| c.to_string());
+        if let Some(ref c) = cores_str {
+            args.push("--cores");
+            args.push(c);
+        }
+
+        if let Some(b) = builders {
+            args.push("--builders");
+            args.push(b);
+        }
+
+        run_nix_with_logging(&args, log_file).await
     }
 
-    const CHUNK_SIZE: usize = 1000;
-    for chunk in paths.chunks(CHUNK_SIZE) {
-        let mut args = vec!["--realise"];
-        args.extend(chunk.iter().map(|s| s.as_str()));
-        run_nix_store_with_logging(&args, log_file).await?;
-    }
-    Ok(())
-}
+    async fn copy_to_cache(
+        &self,
+        paths: &[String],
+        cache_dir: &str,
+        secret_key_file: Option<&str>,
+        log_file: &mut File,
+    ) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut dest = format!("file://{}", cache_dir);
+        if let Some(key_file) = secret_key_file {
+            dest = format!("{}?secret-key={}", dest, key_file);
+        }
 
-pub async fn get_derivation_outputs(drv_path: &str) -> Result<Vec<String>> {
-    // nix derivation show "$path" | jq -r '.[].outputs[].path'
-    let output = run_nix(&["derivation", "show", drv_path])
-        .await
-        .context(format!("Failed to get derivation outputs for: {}", drv_path))?;
-    parse_derivation_outputs(&output)
-        .context(format!("Failed to parse derivation outputs for: {}", drv_path))
+        // Chunk paths to avoid ARG_MAX issues
+        const CHUNK_SIZE: usize = 1000;
+        for chunk in paths.chunks(CHUNK_SIZE) {
+            let mut args = vec!["copy", "--to", &dest];
+            args.extend(chunk.iter().map(|s| s.as_str()));
+            run_nix_with_logging(&args, log_file).await?;
+        }
+        Ok(())
+    }
+
+    async fn query_requisites(&self, path: &str) -> Result<Vec<String>> {
+        let output = run_nix_store(&["--query", "--requisites", "--include-outputs", path])
+            .await
+            .context(format!("Failed to query requisites for path: {}", path))?;
+        Ok(output.lines().map(String::from).collect())
+    }
+
+    async fn realise(&self, paths: &[String], log_file: &mut File) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        const CHUNK_SIZE: usize = 1000;
+        for chunk in paths.chunks(CHUNK_SIZE) {
+            let mut args = vec!["--realise"];
+            args.extend(chunk.iter().map(|s| s.as_str()));
+            run_nix_store_with_logging(&args, log_file).await?;
+        }
+        Ok(())
+    }
+
+    async fn get_derivation_outputs(&self, drv_path: &str) -> Result<Vec<String>> {
+        // nix derivation show "$path" | jq -r '.[].outputs[].path'
+        let output = run_nix(&["derivation", "show", drv_path])
+            .await
+            .context(format!("Failed to get derivation outputs for: {}", drv_path))?;
+        parse_derivation_outputs(&output)
+            .context(format!("Failed to parse derivation outputs for: {}", drv_path))
+    }
 }
 
 fn parse_derivation_outputs(json_output: &str) -> Result<Vec<String>> {
@@ -181,8 +204,8 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
         .spawn()
         .context(format!("Failed to spawn {}", cmd_name))?;
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().context("Failed to capture stdout")?;
+    let stderr = child.stderr.take().context("Failed to capture stderr")?;
 
     // Stream stderr to log file
     let mut reader = BufReader::new(stderr);
