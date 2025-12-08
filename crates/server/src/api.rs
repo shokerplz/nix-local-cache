@@ -12,7 +12,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
