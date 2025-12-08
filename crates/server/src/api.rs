@@ -210,26 +210,51 @@ async fn get_job_logs_range(
     };
 
     let reader = BufReader::new(file);
-    let all_lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-    let total_lines = all_lines.len();
-
     // Limit to max 500 lines per request
     let limit = params.limit.min(500);
 
-    let (from_line, lines) = if params.tail {
-        // Get last N lines
-        let start = if total_lines > limit {
+    let mut total_lines = 0;
+    let mut lines = Vec::new();
+    let mut from_line;
+
+    if params.tail {
+        let mut buffer = std::collections::VecDeque::with_capacity(limit);
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                if buffer.len() == limit {
+                    buffer.pop_front();
+                }
+                buffer.push_back(l);
+                total_lines += 1;
+            }
+        }
+        lines = buffer.into();
+        from_line = if total_lines > limit {
             total_lines - limit
         } else {
             0
         };
-        (start, all_lines[start..].to_vec())
     } else {
-        // Get lines from specified position
-        let start = params.from_line.min(total_lines);
-        let end = (start + limit).min(total_lines);
-        (start, all_lines[start..end].to_vec())
-    };
+        // Forward reading
+        from_line = params.from_line;
+
+        let target_start = params.from_line;
+        let target_end = target_start + limit;
+
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                if total_lines >= target_start && total_lines < target_end {
+                    lines.push(l);
+                }
+                total_lines += 1;
+            }
+        }
+
+        // Correction if from_line was out of bounds
+        if from_line > total_lines {
+            from_line = total_lines;
+        }
+    }
 
     let returned_lines = lines.len();
 
