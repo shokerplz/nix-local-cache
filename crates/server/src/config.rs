@@ -8,7 +8,6 @@ pub struct Settings {
     pub flake_path: String,
     pub cache_dir: String,
     pub log_dir: String,
-    pub meta_file: String,
     pub port: u16,
     pub hosts: Option<Vec<String>>,
     pub worker_threads: usize,
@@ -70,7 +69,6 @@ impl Settings {
             .set_default("flake_path", "/home/ikovalev/projects/dotfiles")?
             .set_default("cache_dir", "/mnt/zfs-pool0/nix-cache/cache")?
             .set_default("log_dir", "/mnt/zfs-pool0/nix-local-cache/log")?
-            .set_default("meta_file", "/mnt/zfs-pool0/nix-cache/metadata.json")?
             .set_default("retry_count", 3)?
             .set_default("retry_delay_secs", 10)?
             .set_default("arch_cores.aarch64-linux", 1)?

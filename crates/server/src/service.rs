@@ -1,7 +1,7 @@
 use crate::config::Settings;
 use crate::nix;
 use nix_local_cache_common::{BuildRequest, Job, JobStatus};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Local;
 use dashmap::DashMap;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
@@ -60,9 +60,6 @@ impl BuildService {
             writeln!(f, "Priority: 40")?;
         }
 
-        if !Path::new(&self.settings.meta_file).exists() {
-            File::create(&self.settings.meta_file)?;
-        }
 
         sqlx::migrate!().run(&self.db_pool).await?;
 
@@ -485,13 +482,18 @@ impl BuildService {
         );
         log_file.write_all(msg.as_bytes()).await?;
 
-        let requisites = nix::query_requisites(&drv_path).await?;
+        let requisites = nix::query_requisites(&drv_path)
+            .await
+            .context(format!("Failed to query requisites for derivation: {}", drv_path))?;
 
         // First pass: identify all derivation outputs
         let mut all_outputs = std::collections::HashSet::new();
         for path in &requisites {
             if path.ends_with(".drv") {
-                let outputs = nix::get_derivation_outputs(path).await.unwrap_or_default();
+                let outputs = nix::get_derivation_outputs(path)
+                    .await
+                    .context(format!("Failed to get outputs for derivation in first pass: {}", path))
+                    .unwrap_or_default();
                 all_outputs.extend(outputs);
             }
         }
@@ -511,7 +513,10 @@ impl BuildService {
             }
 
             if path.ends_with(".drv") {
-                let outputs = nix::get_derivation_outputs(&path).await.unwrap_or_default();
+                let outputs = nix::get_derivation_outputs(&path)
+                    .await
+                    .context(format!("Failed to get outputs for derivation in second pass: {}", path))
+                    .unwrap_or_default();
                 for out in outputs {
                     let out_hash = get_hash(&out).unwrap_or("");
                     let out_narinfo =
@@ -573,7 +578,6 @@ impl BuildService {
         );
         log_file.write_all(msg.as_bytes()).await?;
 
-        self.update_metadata(host, &result_path).await?;
 
         // Update results in job
         // Note: we need to lock the job again to update it.
@@ -603,21 +607,7 @@ impl BuildService {
         Ok(())
     }
 
-    async fn update_metadata(&self, host: &str, store_path: &str) -> Result<()> {
-        let entry = serde_json::json!({
-            "host": host,
-            "timestamp": Local::now().format("%F_%H-%M-%S.%3f").to_string(),
-            "storePath": store_path
-        });
 
-        let mut f = fs::OpenOptions::new()
-            .append(true)
-            .open(&self.settings.meta_file)?;
-
-        writeln!(f, "{}", entry)?;
-
-        Ok(())
-    }
 }
 
 fn get_hash(path: &str) -> Option<&str> {

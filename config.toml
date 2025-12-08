@@ -2,7 +2,6 @@ port = 3000
 flake_path = "."
 cache_dir = "./cache"
 log_dir = "./logs"
-meta_file = "./metadata.json"
 worker_threads = 2
 retry_count = 3
 retry_delay_secs = 5
