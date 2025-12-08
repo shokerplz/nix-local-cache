@@ -114,7 +114,7 @@ function NewBuild() {
   return (
     <div className="max-w-2xl mx-auto">
       <Card>
-        <CardHeader>
+        <CardHeader className="p-4 sm:p-6">
           <CardTitle className="text-xl">Trigger New Build</CardTitle>
         </CardHeader>
         <CardContent className="px-4 sm:px-6">

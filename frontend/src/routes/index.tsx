@@ -52,19 +52,19 @@ function Dashboard() {
         {jobs?.map((job) => (
           <Link key={job.id} to="/jobs/$id" params={{ id: job.id }}>
             <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
-              <CardContent className="p-6 flex items-center justify-between">
-                <div className="flex-1 space-y-1">
+              <CardContent className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex-1 space-y-1 w-full min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-sm text-muted-foreground">{job.id.slice(0, 8)}</span>
                     <StatusBadge status={job.status} />
                   </div>
-                  <div className="font-medium">{job.flake_ref || "Local Flake"}</div>
+                  <div className="font-medium truncate">{job.flake_ref || "Local Flake"}</div>
                   <div className="flex gap-2 text-sm text-muted-foreground items-center flex-wrap">
                     <Server className="h-3 w-3 flex-shrink-0" />
                     <span className="break-all">{job.hosts.join(', ')}</span>
                   </div>
                 </div>
-                <div className="text-right text-sm text-muted-foreground flex-shrink-0">
+                <div className="text-left sm:text-right text-sm text-muted-foreground flex-shrink-0 w-full sm:w-auto">
                   <div>{new Date(job.created_at).toLocaleString()}</div>
                   {job.finished_at && (
                     <div>took {Math.round((new Date(job.finished_at).getTime() - new Date(job.started_at || job.created_at).getTime()) / 1000)}s</div>
