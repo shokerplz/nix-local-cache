@@ -1,7 +1,7 @@
 use crate::service::BuildService;
 use nix_local_cache_common::BuildRequest;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{Method, StatusCode},
     response::{sse::Event, IntoResponse, Sse},
     routing::{get, post},
@@ -9,8 +9,10 @@ use axum::{
 };
 use futures::Stream;
 use metrics_exporter_prometheus::PrometheusHandle;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -35,6 +37,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/jobs/:id", get(get_job_status))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/logs", get(stream_job_logs))
+        .route("/jobs/:id/logs/range", get(get_job_logs_range))
         .route("/logs", get(list_logs))
         .route("/logs/:name", get(get_log))
         .route("/metrics", get(metrics))
@@ -92,6 +95,87 @@ async fn cancel_job(
         Ok(_) => (StatusCode::OK, "Job cancelled").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct LogRangeQuery {
+    #[serde(default)]
+    from_line: usize,
+    #[serde(default = "default_limit")]
+    limit: usize,
+    #[serde(default)]
+    tail: bool,
+}
+
+fn default_limit() -> usize {
+    200
+}
+
+#[derive(Debug, Serialize)]
+struct LogRangeResponse {
+    lines: Vec<String>,
+    total_lines: usize,
+    from_line: usize,
+    returned_lines: usize,
+}
+
+async fn get_job_logs_range(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<LogRangeQuery>,
+) -> impl IntoResponse {
+    let job = match state.service.jobs.get(&id) {
+        Some(j) => j.clone(),
+        None => return (StatusCode::NOT_FOUND, "Job not found").into_response(),
+    };
+
+    let log_path = std::path::Path::new(&state.service.settings.log_dir).join(&job.log_path);
+
+    // Read the log file and count total lines
+    let file = match fs::File::open(&log_path) {
+        Ok(f) => f,
+        Err(_) => {
+            return Json(LogRangeResponse {
+                lines: vec![],
+                total_lines: 0,
+                from_line: 0,
+                returned_lines: 0,
+            })
+            .into_response()
+        }
+    };
+
+    let reader = BufReader::new(file);
+    let all_lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let total_lines = all_lines.len();
+
+    // Limit to max 500 lines per request
+    let limit = params.limit.min(500);
+
+    let (from_line, lines) = if params.tail {
+        // Get last N lines
+        let start = if total_lines > limit {
+            total_lines - limit
+        } else {
+            0
+        };
+        (start, all_lines[start..].to_vec())
+    } else {
+        // Get lines from specified position
+        let start = params.from_line.min(total_lines);
+        let end = (start + limit).min(total_lines);
+        (start, all_lines[start..end].to_vec())
+    };
+
+    let returned_lines = lines.len();
+
+    Json(LogRangeResponse {
+        lines,
+        total_lines,
+        from_line,
+        returned_lines,
+    })
+    .into_response()
 }
 
 async fn stream_job_logs(
