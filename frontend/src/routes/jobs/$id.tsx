@@ -24,8 +24,8 @@ function JobDetails() {
       return res.data
     },
     refetchInterval: (query) => {
-        const status = query.state.data?.status
-        return (status === 'Completed' || status?.Failed) ? false : 1000
+      const status = query.state.data?.status
+      return (status === 'Completed' || status?.Failed) ? false : 1000
     }
   })
 
@@ -40,7 +40,7 @@ function JobDetails() {
 
   useEffect(() => {
     const eventSource = new EventSource(`${API_BASE_URL}/jobs/${id}/logs`)
-    
+
     eventSource.onmessage = (event) => {
       setLogs(prev => [...prev, event.data])
     }
@@ -61,42 +61,43 @@ function JobDetails() {
 
   return (
     <div className="space-y-6">
-        <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-                <div className="space-y-1">
-                    <CardTitle>Job {id.slice(0, 8)}</CardTitle>
-                    <div className="text-sm text-muted-foreground">{job.flake_ref || "Local Flake"}</div>
-                </div>
-                <div className="flex items-center gap-4">
-                    {isRunning && (
-                        <Button 
-                            variant="destructive" 
-                            size="sm" 
-                            onClick={() => cancelMutation.mutate()}
-                            disabled={cancelMutation.isPending}
-                        >
-                            {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4 mr-2" />}
-                            Cancel
-                        </Button>
-                    )}
-                    <Badge variant={job.status === 'Completed' ? 'success' : job.status === 'Running' ? 'default' : job.status === 'Queued' ? 'secondary' : 'destructive'}>
-                        {typeof job.status === 'string' ? job.status : 'Failed'}
-                    </Badge>
-                </div>
-            </CardHeader>
-            <CardContent>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                        <span className="font-medium">Hosts:</span> {job.hosts.join(', ')}
-                    </div>
-                    <div>
-                        <span className="font-medium">Started:</span> {new Date(job.created_at).toLocaleString()}
-                    </div>
-                </div>
-            </CardContent>
-        </Card>
+      <Card>
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="space-y-1">
+            <CardTitle className="text-xl break-all">Job {id.slice(0, 8)}</CardTitle>
+            <div className="text-sm text-muted-foreground break-all">{job.flake_ref || "Local Flake"}</div>
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            {isRunning && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => cancelMutation.mutate()}
+                disabled={cancelMutation.isPending}
+                className="w-full sm:w-auto"
+              >
+                {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4 mr-2" />}
+                Cancel
+              </Button>
+            )}
+            <Badge variant={job.status === 'Completed' ? 'success' : job.status === 'Running' ? 'default' : job.status === 'Queued' ? 'secondary' : 'destructive'}>
+              {typeof job.status === 'string' ? job.status : 'Failed'}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="font-medium">Hosts:</span> {job.hosts.join(', ')}
+            </div>
+            <div>
+              <span className="font-medium">Started:</span> {new Date(job.created_at).toLocaleString()}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-        <Terminal lines={logs} className="h-[600px]" />
+      <Terminal lines={logs} className="h-[600px]" />
     </div>
   )
 }

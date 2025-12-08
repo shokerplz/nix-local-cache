@@ -39,10 +39,10 @@ function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight">Builds</h1>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Builds</h1>
         <Link to="/build/new">
-          <Button>
+          <Button className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" /> New Build
           </Button>
         </Link>
@@ -53,18 +53,18 @@ function Dashboard() {
           <Link key={job.id} to="/jobs/$id" params={{ id: job.id }}>
             <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
               <CardContent className="p-6 flex items-center justify-between">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
+                <div className="flex-1 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-sm text-muted-foreground">{job.id.slice(0, 8)}</span>
                     <StatusBadge status={job.status} />
                   </div>
                   <div className="font-medium">{job.flake_ref || "Local Flake"}</div>
-                  <div className="flex gap-2 text-sm text-muted-foreground items-center">
-                    <Server className="h-3 w-3" />
-                    {job.hosts.join(', ')}
+                  <div className="flex gap-2 text-sm text-muted-foreground items-center flex-wrap">
+                    <Server className="h-3 w-3 flex-shrink-0" />
+                    <span className="break-all">{job.hosts.join(', ')}</span>
                   </div>
                 </div>
-                <div className="text-right text-sm text-muted-foreground">
+                <div className="text-right text-sm text-muted-foreground flex-shrink-0">
                   <div>{new Date(job.created_at).toLocaleString()}</div>
                   {job.finished_at && (
                     <div>took {Math.round((new Date(job.finished_at).getTime() - new Date(job.started_at || job.created_at).getTime()) / 1000)}s</div>
