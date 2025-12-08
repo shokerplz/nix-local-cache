@@ -487,7 +487,16 @@ impl BuildService {
 
         let requisites = nix::query_requisites(&drv_path).await?;
 
-        // Batch paths for copying
+        // First pass: identify all derivation outputs
+        let mut all_outputs = std::collections::HashSet::new();
+        for path in &requisites {
+            if path.ends_with(".drv") {
+                let outputs = nix::get_derivation_outputs(path).await.unwrap_or_default();
+                all_outputs.extend(outputs);
+            }
+        }
+
+        // Second pass: batch paths for copying, skipping outputs
         let mut paths_to_copy = Vec::new();
         let mut paths_to_realise = Vec::new();
         let mut outputs_to_copy = Vec::new();
@@ -496,7 +505,8 @@ impl BuildService {
             let hash = get_hash(&path).unwrap_or("");
             let narinfo = Path::new(&self.settings.cache_dir).join(format!("{}.narinfo", hash));
 
-            if !narinfo.exists() {
+            // Skip outputs - they'll be handled after realisation
+            if !all_outputs.contains(&path) && !narinfo.exists() {
                 paths_to_copy.push(path.clone());
             }
 
@@ -508,10 +518,6 @@ impl BuildService {
                         Path::new(&self.settings.cache_dir).join(format!("{}.narinfo", out_hash));
 
                     if !out_narinfo.exists() {
-                        // We can't batch realise efficiently if we need to check output existence for each
-                        // But we can collect ALL drvs that need ANY output realised.
-                        // Simpler: just add to list.
-                        // Note: `paths_to_realise` contains drv paths. `outputs_to_copy` contains output paths.
                         paths_to_realise.push(path.clone());
                         outputs_to_copy.push(out);
                     }
