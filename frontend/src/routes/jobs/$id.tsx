@@ -6,8 +6,8 @@ import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card'
 import { Loader2, XCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { API_BASE_URL } from '../../lib/config'
+import { useBatchedLogs } from '../../hooks/use-batched-logs'
 
 export const Route = createFileRoute('/jobs/$id')({
   component: JobDetails,
@@ -15,7 +15,6 @@ export const Route = createFileRoute('/jobs/$id')({
 
 function JobDetails() {
   const { id } = Route.useParams()
-  const [logs, setLogs] = useState<string[]>([])
 
   const { data: job, isLoading, refetch } = useQuery({
     queryKey: ['job', id],
@@ -29,6 +28,13 @@ function JobDetails() {
     }
   })
 
+  const isRunning = job?.status === 'Running' || job?.status === 'Queued'
+
+  const { lines, totalLines, isLoading: isLoadingLogs, hasMore, loadMoreAbove } = useBatchedLogs(
+    id,
+    isRunning
+  )
+
   const cancelMutation = useMutation({
     mutationFn: async () => {
       await axios.post(`${API_BASE_URL}/jobs/${id}/cancel`)
@@ -38,26 +44,8 @@ function JobDetails() {
     }
   })
 
-  useEffect(() => {
-    const eventSource = new EventSource(`${API_BASE_URL}/jobs/${id}/logs`)
-
-    eventSource.onmessage = (event) => {
-      setLogs(prev => [...prev, event.data])
-    }
-
-    eventSource.onerror = () => {
-      eventSource.close()
-    }
-
-    return () => {
-      eventSource.close()
-    }
-  }, [id])
-
   if (isLoading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>
   if (!job) return <div>Job not found</div>
-
-  const isRunning = job.status === 'Running' || job.status === 'Queued'
 
   return (
     <div className="space-y-6">
@@ -97,7 +85,24 @@ function JobDetails() {
         </CardContent>
       </Card>
 
-      <Terminal lines={logs} className="h-[600px]" />
+      <div className="space-y-2">
+        <div className="text-sm text-muted-foreground">
+          {totalLines > 0 && (
+            <span>
+              Showing {lines.length} of {totalLines} log lines
+              {hasMore && ' (scroll up to load more)'}
+            </span>
+          )}
+        </div>
+        <Terminal
+          lines={lines}
+          className="h-[600px]"
+          isLoading={isLoadingLogs}
+          hasMore={hasMore}
+          onScrollTop={loadMoreAbove}
+          autoScroll={isRunning}
+        />
+      </div>
     </div>
   )
 }
