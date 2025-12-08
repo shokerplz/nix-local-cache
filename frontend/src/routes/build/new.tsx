@@ -30,7 +30,7 @@ function NewBuild() {
       if (flakeUrl) payload.flake_url = flakeUrl
       if (branch) payload.flake_branch = branch
       if (hosts) payload.hosts = hosts.split(',').map(h => h.trim()).filter(h => h.length > 0)
-      
+
       const res = await axios.post(`${API_BASE_URL}/build`, payload)
       return res.data
     },
@@ -48,24 +48,24 @@ function NewBuild() {
     <div className="max-w-2xl mx-auto">
       <Card>
         <CardHeader>
-          <CardTitle>Trigger New Build</CardTitle>
+          <CardTitle className="text-xl">Trigger New Build</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-4 sm:px-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">Flake URL (Optional)</label>
-              <Input 
-                placeholder="git+https://github.com/owner/repo.git" 
+              <Input
+                placeholder="git+https://github.com/owner/repo.git"
                 value={flakeUrl}
                 onChange={e => setFlakeUrl(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">Leave empty to use server-configured local flake.</p>
             </div>
-            
+
             <div className="space-y-2">
               <label className="text-sm font-medium">Branch / Ref (Optional)</label>
-              <Input 
-                placeholder="main" 
+              <Input
+                placeholder="main"
                 value={branch}
                 onChange={e => setBranch(e.target.value)}
               />
@@ -73,8 +73,8 @@ function NewBuild() {
 
             <div className="space-y-2">
               <label className="text-sm font-medium">Hosts (Optional, comma separated)</label>
-              <Input 
-                placeholder="media-server, rpi5" 
+              <Input
+                placeholder="media-server, rpi5"
                 value={hosts}
                 onChange={e => setHosts(e.target.value)}
               />
@@ -87,7 +87,7 @@ function NewBuild() {
                 Start Build
               </Button>
             </div>
-            
+
             {mutation.isError && (
               <div className="text-sm text-destructive mt-2">
                 Failed to start build: {mutation.error.message}
