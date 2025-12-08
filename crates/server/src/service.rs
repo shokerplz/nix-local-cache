@@ -68,6 +68,38 @@ impl BuildService {
         Ok(())
     }
 
+    pub async fn restart_job(&self, job_id: Uuid) -> Result<()> {
+        if let Some(mut job) = self.jobs.get_mut(&job_id) {
+            // Only allow restarting failed jobs
+            if !matches!(job.status, JobStatus::Failed) {
+                 return Err(anyhow::anyhow!("Only failed jobs can be restarted"));
+            }
+
+            // Reset job state
+            job.status = JobStatus::Queued;
+            job.status_message = None;
+            job.started_at = None;
+            job.finished_at = None;
+            job.current_host = None;
+            job.results = Some(std::collections::HashMap::new());
+
+            // Truncate log file
+            let log_path = Path::new(&self.settings.log_dir).join(&job.log_path);
+            File::create(&log_path)?; 
+
+            let job_clone = job.clone();
+            drop(job); // Release lock before async operations
+
+            self.update_job_in_db(&job_clone).await?;
+            self.queue_tx.send(job_id).await?;
+
+            info!("Restarted job {}", job_id);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Job not found"))
+        }
+    }
+
     pub async fn cancel_job(&self, job_id: Uuid) -> Result<()> {
         if let Some((_, handle)) = self.running_jobs.remove(&job_id) {
             handle.abort();
@@ -614,4 +646,86 @@ fn get_hash(path: &str) -> Option<&str> {
         .file_name()
         .and_then(|f| f.to_str())
         .map(|s| &s[0..32])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Settings;
+    use tempfile::tempdir;
+
+    async fn create_test_service() -> (BuildService, mpsc::Receiver<Uuid>, tempfile::TempDir) {
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let cache_dir = temp_dir.path().join("cache");
+        let log_dir = temp_dir.path().join("logs");
+
+        let settings = Settings {
+            port: 3000,
+            sqlite_db_path: db_path.to_string_lossy().to_string(),
+            cache_dir: cache_dir.to_string_lossy().to_string(),
+            log_dir: log_dir.to_string_lossy().to_string(),
+            flake_path: ".".to_string(),
+            hosts: None,
+            secret_key_file: None,
+            retry_count: 1,
+            retry_delay_secs: 1,
+            arch_cores: std::collections::HashMap::new(),
+            worker_threads: 1,
+            builders: None,
+        };
+
+        let (service, rx) = BuildService::new(settings).await.unwrap();
+        service.init().await.unwrap();
+        (service, rx, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_restart_failed_job() {
+        let (service, _rx, _temp_dir) = create_test_service().await;
+
+        // Create a fake job
+        let job_id = Uuid::new_v4();
+        let log_file_name = format!("{}.log", job_id);
+        // Create log file so restart_job can truncate it
+        let log_path = Path::new(&service.settings.log_dir).join(&log_file_name);
+        File::create(&log_path).unwrap();
+
+        let job = Job {
+            id: job_id,
+            hosts: vec!["localhost".to_string()],
+            status: JobStatus::Failed,
+            status_message: Some("Failed".to_string()),
+            created_at: Local::now(),
+            started_at: Some(Local::now()),
+            finished_at: Some(Local::now()),
+            log_path: log_file_name,
+            flake_ref: ".".to_string(),
+            results: Some(std::collections::HashMap::new()),
+            current_host: Some("localhost".to_string()),
+        };
+
+        service.jobs.insert(job_id, job.clone());
+        service.insert_job_into_db(&job).await.unwrap();
+
+        // Restart it
+        service.restart_job(job_id).await.unwrap();
+
+        // Verify status
+        let updated_job = service.jobs.get(&job_id).unwrap();
+        assert_eq!(updated_job.status, JobStatus::Queued);
+        assert_eq!(updated_job.status_message, None);
+        assert!(updated_job.started_at.is_none());
+        assert!(updated_job.finished_at.is_none());
+        assert!(updated_job.current_host.is_none());
+        
+        // Check DB update
+        let saved_job = sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&service.db_pool)
+            .await
+            .unwrap();
+            
+        assert_eq!(saved_job.status, JobStatus::Queued);
+    }
 }

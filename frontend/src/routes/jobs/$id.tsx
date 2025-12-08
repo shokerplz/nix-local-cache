@@ -5,7 +5,7 @@ import { Terminal } from '../../components/ui/terminal'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card'
-import { Loader2, XCircle } from 'lucide-react'
+import { Loader2, XCircle, RotateCcw } from 'lucide-react'
 import { API_BASE_URL } from '../../lib/config'
 import { useBatchedLogs } from '../../hooks/use-batched-logs'
 
@@ -44,6 +44,15 @@ function JobDetails() {
     }
   })
 
+  const restartMutation = useMutation({
+    mutationFn: async () => {
+      await axios.post(`${API_BASE_URL}/jobs/${id}/restart`)
+    },
+    onSuccess: () => {
+      refetch()
+    }
+  })
+
   if (isLoading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>
   if (!job) return <div>Job not found</div>
 
@@ -56,6 +65,18 @@ function JobDetails() {
             <div className="text-sm text-muted-foreground break-all">{job.flake_ref || "Local Flake"}</div>
           </div>
           <div className="flex items-center gap-4 flex-wrap">
+            {job.status === 'Failed' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => restartMutation.mutate()}
+                disabled={restartMutation.isPending}
+                className="w-full sm:w-auto"
+              >
+                {restartMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                Restart
+              </Button>
+            )}
             {isRunning && (
               <Button
                 variant="destructive"

@@ -38,6 +38,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/jobs", get(list_jobs))
         .route("/jobs/:id", get(get_job_status))
         .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/jobs/:id/restart", post(restart_job))
         .route("/jobs/:id/logs", get(stream_job_logs))
         .route("/jobs/:id/logs/range", get(get_job_logs_range))
         .route("/logs", get(list_logs))
@@ -113,6 +114,16 @@ async fn cancel_job(
 ) -> impl IntoResponse {
     match state.service.cancel_job(id).await {
         Ok(_) => (StatusCode::OK, "Job cancelled").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+async fn restart_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    match state.service.restart_job(id).await {
+        Ok(_) => (StatusCode::OK, "Job restarted").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
