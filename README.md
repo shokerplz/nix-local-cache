@@ -8,8 +8,63 @@ A robust, local build service and binary cache for Nix, designed to simplify man
 *   **Distributed Builds:** Configure remote builders (via SSH) to offload compilation.
 *   **Concurrency Control:** Fine-tune how many jobs run in parallel and how many build steps each builder handles.
 *   **Web Dashboard:** Monitor build progress, view real-time logs, and cancel running jobs.
-*   **Binary Cache:** Serves built artifacts as a standard Nix binary cache (signed).
+*   **Binary Cache:** Populates a directory with a standard Nix binary cache structure (signed). You need a web server (like Nginx) to serve this directory.
 *   **Metrics:** Prometheus endpoint for monitoring system health.
+
+## Deployment Hints & Caveats
+
+### Serving the Binary Cache
+
+The `nix-local-cache-server` populates a directory (specified by `workingDir` / `cache`) with signed NARs and `.narinfo` files. To make this usable by other machines, you must serve this directory via HTTP.
+
+**Nginx Example:**
+```nginx
+server {
+    listen 80;
+    server_name cache.local;
+    root /path/to/nix-cache/cache;
+    
+    location / {
+        autoindex on;
+    }
+}
+```
+
+### Private Repositories
+
+If your flake is in a private Git repository, the server needs SSH access.
+1.  **SSH Key:** Ensure the user running the service has an SSH key authorized to access the repo.
+2.  **GIT_SSH_COMMAND:** Set this environment variable to specify the key if it's not the default.
+3.  **Known Hosts:** The system user (e.g., `nix-local-cache`) must have the git server's host key in its `known_hosts`, or you must configure global known hosts.
+
+**Systemd Example:**
+```nix
+systemd.services.nix-local-cache-server = {
+  environment.GIT_SSH_COMMAND = "ssh -i /path/to/private/key -o IdentitiesOnly=yes";
+};
+
+programs.ssh.knownHosts = {
+  "github.com" = { publicKey = "..."; };
+  "git.your-domain.com" = { publicKey = "..."; };
+};
+```
+
+### Frontend Configuration in Production
+
+If you deploy the frontend separately (e.g., via Nginx or a CDN) or behind a reverse proxy, you need to tell it where the API is. The frontend looks for a global `window.SERVER_CONFIG` object.
+
+You can inject this by serving a `config.js` file at the root:
+
+**Nginx Example:**
+```nix
+location = /config.js {
+    alias = pkgs.writeText "config.js" ''
+        window.SERVER_CONFIG = {
+            apiUrl: "https://api.builder.example.com"
+        };
+    '';
+}
+```
 
 ## Getting Started
 
