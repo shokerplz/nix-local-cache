@@ -1,6 +1,6 @@
 use crate::service::BuildService;
 use crate::nix;
-use nix_local_cache_common::BuildRequest;
+use nix_local_cache_common::{BuildRequest, Job};
 use axum::{
     extract::{Path, Query, State},
     http::{Method, StatusCode},
@@ -74,11 +74,53 @@ async fn get_flake_hosts(
     }
 }
 
-async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut jobs: Vec<_> = state.service.jobs.iter().map(|entry| entry.value().clone()).collect();
-    // Sort by created_at descending
-    jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Json(jobs).into_response()
+#[derive(Deserialize)]
+struct PaginationQuery {
+    #[serde(default = "default_page")]
+    page: usize,
+    #[serde(default = "default_page_size")]
+    page_size: usize,
+}
+
+fn default_page() -> usize { 1 }
+fn default_page_size() -> usize { 10 }
+
+#[derive(Serialize)]
+struct PaginatedJobs {
+    jobs: Vec<Job>,
+    total: i64,
+    page: usize,
+    page_size: usize,
+    total_pages: usize,
+}
+
+async fn list_jobs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let page = if query.page < 1 { 1 } else { query.page };
+    let page_size = match query.page_size {
+        10 | 25 | 50 => query.page_size,
+        _ => 10,
+    };
+    
+    let limit = page_size as i64;
+    let offset = ((page - 1) * page_size) as i64;
+
+    match state.service.get_jobs(limit, offset).await {
+        Ok((jobs, total)) => {
+            let total_pages = (total as f64 / page_size as f64).ceil() as usize;
+            Json(PaginatedJobs {
+                jobs,
+                total,
+                page,
+                page_size,
+                total_pages,
+            })
+            .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn trigger_build(

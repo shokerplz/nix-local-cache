@@ -248,6 +248,38 @@ impl BuildService {
         Ok(())
     }
 
+    pub async fn get_jobs(&self, limit: i64, offset: i64) -> Result<(Vec<Job>, i64)> {
+        let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+            .fetch_one(&self.db_pool)
+            .await?;
+
+        let rows = sqlx::query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?")
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.db_pool)
+            .await?;
+
+        let mut jobs = Vec::new();
+        for row in rows {
+            let job = Job {
+                id: row.try_get("id")?,
+                hosts: serde_json::from_str(row.try_get("hosts")?)?,
+                status: row.try_get("status")?,
+                status_message: row.try_get("status_message")?,
+                created_at: row.try_get("created_at")?,
+                started_at: row.try_get("started_at")?,
+                finished_at: row.try_get("finished_at")?,
+                log_path: row.try_get("log_path")?,
+                flake_ref: row.try_get("flake_ref")?,
+                results: row.try_get("results").unwrap_or_else(|_| None).and_then(|v: String| serde_json::from_str(&v).ok()),
+                current_host: row.try_get("current_host")?,
+            };
+            jobs.push(job);
+        }
+
+        Ok((jobs, total_count))
+    }
+
     pub async fn submit_build(&self, req: BuildRequest) -> Result<Uuid> {
         let id = Uuid::new_v4();
 

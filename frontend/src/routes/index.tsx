@@ -5,8 +5,9 @@ import { Link } from '@tanstack/react-router'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent } from '../components/ui/card'
 import { Button } from '../components/ui/button'
-import { Loader2, Plus, Server } from 'lucide-react'
+import { Loader2, Plus, Server, ChevronLeft, ChevronRight } from 'lucide-react'
 import { API_BASE_URL } from '../lib/config'
+import { useState } from 'react'
 
 interface Job {
   id: string
@@ -20,15 +21,26 @@ interface Job {
   hosts: string[]
 }
 
+interface PaginatedJobs {
+  jobs: Job[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
 export const Route = createFileRoute('/')({
   component: Dashboard,
 })
 
 function Dashboard() {
-  const { isPending, error, data: jobs } = useQuery({
-    queryKey: ['jobs'],
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+
+  const { isPending, error, data: paginatedData } = useQuery({
+    queryKey: ['jobs', page, pageSize],
     queryFn: async () => {
-      const res = await axios.get<Job[]>(`${API_BASE_URL}/jobs`);
+      const res = await axios.get<PaginatedJobs>(`${API_BASE_URL}/jobs?page=${page}&page_size=${pageSize}`);
       return res.data;
     },
     refetchInterval: 5000,
@@ -36,6 +48,9 @@ function Dashboard() {
 
   if (isPending) return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>
   if (error) return <div className="text-destructive text-center">Error loading jobs. Is the backend running?</div>
+
+  const jobs = paginatedData?.jobs || []
+  const totalPages = paginatedData?.total_pages || 1
 
   return (
     <div className="space-y-6">
@@ -49,7 +64,7 @@ function Dashboard() {
       </div>
 
       <div className="flex flex-col gap-4">
-        {jobs?.map((job) => (
+        {jobs.map((job) => (
           <Link key={job.id} to="/jobs/$id" params={{ id: job.id }} className="block">
             <Card className="hover:bg-accent/50 transition-colors cursor-pointer w-full">
               <CardContent className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -74,9 +89,48 @@ function Dashboard() {
             </Card>
           </Link>
         ))}
-        {jobs?.length === 0 && (
+        {jobs.length === 0 && (
           <div className="text-center text-muted-foreground py-12 m-auto">No builds found.</div>
         )}
+      </div>
+
+      <div className="flex items-center justify-center gap-4 py-4 flex-wrap">
+        <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Rows per page</span>
+            <select
+                className="h-8 rounded-md border border-input bg-background px-2 py-1 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                value={pageSize}
+                onChange={(e) => {
+                    setPageSize(Number(e.target.value))
+                    setPage(1)
+                }}
+            >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+            </select>
+        </div>
+        <div className="flex items-center gap-2">
+            <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1 || isPending}
+            >
+                <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+            </Button>
+            <span className="text-sm text-muted-foreground min-w-[5rem] text-center">
+                Page {page} of {totalPages}
+            </span>
+            <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages || isPending}
+            >
+                Next <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+        </div>
       </div>
     </div>
   )
