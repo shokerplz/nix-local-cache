@@ -74,16 +74,13 @@ export function useBatchedLogs(jobId: string, isJobRunning: boolean) {
                 }
 
                 // Prepend lines for scroll-up loading
-                // Check if we're loading earlier content
-                if (batch.from_line < prev.lines.length) {
-                    return {
-                        ...prev,
-                        lines: [...batch.lines, ...prev.lines],
-                        totalLines: batch.total_lines,
-                        loadedRanges: newLoadedRanges,
-                        isLoading: false,
-                        hasMore: batch.from_line > 0,
-                    }
+                return {
+                    ...prev,
+                    lines: [...batch.lines, ...prev.lines],
+                    totalLines: batch.total_lines,
+                    loadedRanges: newLoadedRanges,
+                    isLoading: false,
+                    hasMore: batch.from_line > 0,
                 }
 
                 return {
