@@ -1,7 +1,7 @@
 use clap::Parser;
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::{collections::HashMap, fs, path};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
@@ -123,20 +123,7 @@ impl Settings {
             if let Ok(abs_path) = std::path::Path::new(&settings.sqlite_db_path).canonicalize() {
                 settings.sqlite_db_path = abs_path.to_string_lossy().to_string();
             }
-        } // Default db_file relative to cache_dir if not set explicitly (or if it's just a filename)
-          // Note: Config crate defaults are set before deserialization.
-          // But we can't easily refer to "cache_dir" in set_default for another field.
-          // So we handle the default logic here if it's missing or empty (though String defaults to empty).
-          // Actually, let's just set a dummy default and fix it here.
-          // Wait, `try_deserialize` requires all fields.
-          // Let's set a default of "jobs.json" in the builder? No, we need the absolute path of cache_dir.
-          // Let's make db_file optional in struct? No, user wants persistence.
-
-        // Best approach: Set default to "jobs.json". If it's relative, join with cache_dir.
-        // But `db_file` might not be in `builder` if we don't set it.
-
-        // Let's check if `settings.db_file` is empty or relative.
-        // Actually, I missed setting a default in the builder above.
+        }
 
         if !std::path::Path::new(&settings.log_dir).is_absolute() {
             if let Ok(cwd) = std::env::current_dir() {
@@ -144,6 +131,25 @@ impl Settings {
             }
         }
 
+        // It's better not to canonicalize secret file path, because then we need to restart every
+        // time secret path changes. Here we just want to verify that this path exist
+        if let Some(ref key_file) = settings.secret_key_file {
+            if let Ok(exists) = fs::exists(key_file) {
+                if exists {
+                    if std::path::Path::new(key_file).is_relative() {
+                        if let Ok(absolute_path) = std::path::absolute(key_file) {
+                            settings.secret_key_file =
+                                Some(absolute_path.to_string_lossy().to_string());
+                        }
+                    }
+                } else {
+                    return Err(ConfigError::NotFound(format!(
+                        "secret file {} does not exist",
+                        key_file
+                    )));
+                }
+            }
+        }
         if let Some(ref key_file) = settings.secret_key_file {
             if let Ok(abs_path) = std::fs::canonicalize(key_file) {
                 settings.secret_key_file = Some(abs_path.to_string_lossy().to_string());
@@ -154,11 +160,6 @@ impl Settings {
                 }
             }
         }
-
-        // Handle db_file logic.
-        // If we didn't set it in builder, it might be missing if not in struct default?
-        // Since I added it to struct, deserialization will fail if not present.
-        // So I MUST set a default in builder.
 
         Ok(settings)
     }
