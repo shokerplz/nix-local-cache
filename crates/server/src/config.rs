@@ -150,16 +150,7 @@ impl Settings {
                 }
             }
         }
-        if let Some(ref key_file) = settings.secret_key_file {
-            if let Ok(abs_path) = std::fs::canonicalize(key_file) {
-                settings.secret_key_file = Some(abs_path.to_string_lossy().to_string());
-            } else if !std::path::Path::new(key_file).is_absolute() {
-                if let Ok(cwd) = std::env::current_dir() {
-                    settings.secret_key_file =
-                        Some(cwd.join(key_file).to_string_lossy().to_string());
-                }
-            }
-        }
+
 
         Ok(settings)
     }
