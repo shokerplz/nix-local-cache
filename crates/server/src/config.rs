@@ -1,7 +1,7 @@
 use clap::Parser;
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
-use std::{collections::HashMap, fs, path};
+use std::{collections::HashMap, fs};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
@@ -76,7 +76,6 @@ impl Settings {
             .add_source(File::with_name(&args.config).required(false))
             .add_source(Environment::with_prefix("NIX_CACHE"));
 
-        // CLI Overrides
         if let Some(v) = args.flake_path {
             builder = builder.set_override("flake_path", v)?;
         }
@@ -104,13 +103,11 @@ impl Settings {
 
         let mut settings: Self = builder.build()?.try_deserialize()?;
 
-        // Canonicalize paths to absolute
         if let Ok(abs_path) = std::fs::canonicalize(&settings.cache_dir) {
             settings.cache_dir = abs_path.to_string_lossy().to_string();
         } else if let Ok(abs_path) = std::path::Path::new(&settings.cache_dir).canonicalize() {
             settings.cache_dir = abs_path.to_string_lossy().to_string();
         } else {
-            // Fallback manually if canonicalize fails (e.g. dir doesn't exist yet)
             if !std::path::Path::new(&settings.cache_dir).is_absolute() {
                 if let Ok(cwd) = std::env::current_dir() {
                     settings.cache_dir =
@@ -131,8 +128,6 @@ impl Settings {
             }
         }
 
-        // It's better not to canonicalize secret file path, because then we need to restart every
-        // time secret path changes. Here we just want to verify that this path exist
         if let Some(ref key_file) = settings.secret_key_file {
             if let Ok(exists) = fs::exists(key_file) {
                 if exists {
@@ -150,7 +145,6 @@ impl Settings {
                 }
             }
         }
-
 
         Ok(settings)
     }

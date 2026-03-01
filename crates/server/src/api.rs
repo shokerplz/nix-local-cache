@@ -1,6 +1,5 @@
-use crate::service::BuildService;
 use crate::nix;
-use nix_local_cache_common::{BuildRequest, PaginatedJobs};
+use crate::service::BuildService;
 use axum::{
     extract::{Path, Query, State},
     http::{Method, StatusCode},
@@ -9,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use futures::Stream;
-use metrics_exporter_prometheus::PrometheusHandle;
+use nix_local_cache_common::{BuildRequest, PaginatedJobs};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
@@ -22,7 +21,6 @@ use uuid::Uuid;
 
 pub struct AppState {
     pub service: Arc<BuildService>,
-    pub metrics_handle: PrometheusHandle,
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
@@ -43,17 +41,12 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/jobs/:id/logs/range", get(get_job_logs_range))
         .route("/logs", get(list_logs))
         .route("/logs/:name", get(get_log))
-        .route("/metrics", get(metrics))
         .layer(cors)
         .with_state(state)
 }
 
 async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
-}
-
-async fn metrics(State(state): State<Arc<AppState>>) -> String {
-    state.metrics_handle.render()
 }
 
 #[derive(Deserialize)]
@@ -66,7 +59,11 @@ async fn get_flake_hosts(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetHostsQuery>,
 ) -> impl IntoResponse {
-    let flake_ref = nix::resolve_flake_ref(query.flake_url, query.branch, &state.service.settings.flake_path);
+    let flake_ref = nix::resolve_flake_ref(
+        query.flake_url,
+        query.branch,
+        &state.service.settings.flake_path,
+    );
 
     match state.service.get_hosts(&flake_ref).await {
         Ok(hosts) => Json::<Vec<String>>(hosts).into_response(),
@@ -82,8 +79,12 @@ struct PaginationQuery {
     page_size: usize,
 }
 
-fn default_page() -> usize { 1 }
-fn default_page_size() -> usize { 10 }
+fn default_page() -> usize {
+    1
+}
+fn default_page_size() -> usize {
+    10
+}
 
 async fn list_jobs(
     State(state): State<Arc<AppState>>,
@@ -94,7 +95,7 @@ async fn list_jobs(
         10 | 25 | 50 => query.page_size,
         _ => 10,
     };
-    
+
     let limit = page_size as i64;
     let offset = ((page - 1) * page_size) as i64;
 
@@ -141,10 +142,7 @@ async fn get_job_status(
     }
 }
 
-async fn cancel_job(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+async fn cancel_job(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match state.service.cancel_job(id).await {
         Ok(_) => (StatusCode::OK, "Job cancelled").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -369,10 +367,7 @@ async fn get_log(
 }
 
 impl AppState {
-    pub fn new(service: Arc<BuildService>, metrics_handle: PrometheusHandle) -> Self {
-        Self {
-            service,
-            metrics_handle,
-        }
+    pub fn new(service: Arc<BuildService>) -> Self {
+        Self { service }
     }
 }

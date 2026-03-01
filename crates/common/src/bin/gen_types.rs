@@ -1,9 +1,8 @@
-use nix_local_cache_common::{Job, JobStatus, BuildRequest, PaginatedJobs};
-use ts_rs::TS;
+use nix_local_cache_common::{BuildRequest, Job, JobStatus, PaginatedJobs};
 use std::path::Path;
+use ts_rs::TS;
 
 fn main() {
-    // Ensure the directory exists
     let output_dir = "frontend/src/lib";
     if !Path::new(output_dir).exists() {
         std::fs::create_dir_all(output_dir).expect("Failed to create output directory");
@@ -24,11 +23,6 @@ fn main() {
     buffer.push_str("export ");
     buffer.push_str(&PaginatedJobs::decl());
     buffer.push_str("\n");
-
-    // Replace Uuid with string because ts-rs might output it as string but we want to be sure
-    // Actually ts-rs handles Uuid as string by default with the uuid-impl feature.
-    // However, we might want to consolidate all into one file 'types.ts'.
-    // The `decl()` method returns the TypeScript interface string.
 
     std::fs::write("frontend/src/lib/types.ts", buffer).expect("Unable to write file");
     println!("Types generated successfully to frontend/src/lib/types.ts");
