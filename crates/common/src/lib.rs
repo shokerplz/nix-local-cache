@@ -28,6 +28,7 @@ pub struct Job {
     pub finished_at: Option<DateTime<Local>>,
     pub log_path: String,
     pub flake_ref: String,
+    pub timeout_seconds: u64,
     #[cfg_attr(feature = "db", sqlx(json))]
     pub results: Option<std::collections::HashMap<String, String>>,
     pub current_host: Option<String>,
@@ -39,6 +40,7 @@ pub struct BuildRequest {
     pub hosts: Option<Vec<String>>,
     pub flake_url: Option<String>,
     pub flake_branch: Option<String>,
+    pub timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

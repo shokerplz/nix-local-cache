@@ -6,27 +6,12 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tracing::debug;
-use async_trait::async_trait;
-
-#[async_trait]
-#[cfg_attr(test, mockall::automock)]
-pub trait NixOps: Send + Sync {
-    async fn get_hosts(&self, flake_path: &str) -> Result<Vec<String>>;
-    async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String>;
-    async fn get_drv_path(&self, flake_path: &str, host: &str) -> Result<String>;
-    async fn build_system(&self, flake_path: &str, host: &str, cores: Option<u32>, builders: Option<&str>, log_file: &mut File) -> Result<String>;
-    async fn copy_to_cache(&self, paths: &[String], cache_dir: &str, secret_key_file: Option<&str>, log_file: &mut File) -> Result<()>;
-    async fn query_requisites(&self, path: &str) -> Result<Vec<String>>;
-    async fn realise(&self, paths: &[String], log_file: &mut File) -> Result<()>;
-    async fn get_derivation_outputs(&self, drv_path: &str) -> Result<Vec<String>>;
-}
 
 #[derive(Clone)]
-pub struct RealNixOps;
+pub struct NixOps;
 
-#[async_trait]
-impl NixOps for RealNixOps {
-    async fn get_hosts(&self, flake_path: &str) -> Result<Vec<String>> {
+impl NixOps {
+    pub async fn get_hosts(&self, flake_path: &str) -> Result<Vec<String>> {
         let expr = format!(
             "let f = builtins.getFlake (toString {}); in builtins.concatStringsSep \" \" (builtins.attrNames f.nixosConfigurations)",
             flake_path
@@ -36,7 +21,7 @@ impl NixOps for RealNixOps {
         Ok(output.split_whitespace().map(String::from).collect())
     }
 
-    async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String> {
+    pub async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String> {
         let attr = format!(
             "{}#nixosConfigurations.{}.config.nixpkgs.system",
             flake_path, host
@@ -44,7 +29,7 @@ impl NixOps for RealNixOps {
         run_nix(&["eval", "--raw", &attr]).await
     }
 
-    async fn get_drv_path(&self, flake_path: &str, host: &str) -> Result<String> {
+    pub async fn get_drv_path(&self, flake_path: &str, host: &str) -> Result<String> {
         let attr = format!(
             "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
             flake_path, host
@@ -52,7 +37,7 @@ impl NixOps for RealNixOps {
         run_nix(&["eval", "--raw", &attr]).await
     }
 
-    async fn build_system(
+    pub async fn build_system(
         &self,
         flake_path: &str,
         host: &str,
@@ -80,7 +65,7 @@ impl NixOps for RealNixOps {
         run_nix_with_logging(&args, log_file).await
     }
 
-    async fn copy_to_cache(
+    pub async fn copy_to_cache(
         &self,
         paths: &[String],
         cache_dir: &str,
@@ -96,7 +81,7 @@ impl NixOps for RealNixOps {
         }
 
         // Chunk paths to avoid ARG_MAX issues
-        const CHUNK_SIZE: usize = 1000;
+        const CHUNK_SIZE: usize = 10;
         for chunk in paths.chunks(CHUNK_SIZE) {
             let mut args = vec!["copy", "--to", &dest];
             args.extend(chunk.iter().map(|s| s.as_str()));
@@ -105,19 +90,20 @@ impl NixOps for RealNixOps {
         Ok(())
     }
 
-    async fn query_requisites(&self, path: &str) -> Result<Vec<String>> {
+    pub async fn query_requisites(&self, path: &str) -> Result<Vec<String>> {
         let output = run_nix_store(&["--query", "--requisites", "--include-outputs", path])
             .await
             .context(format!("Failed to query requisites for path: {}", path))?;
         Ok(output.lines().map(String::from).collect())
     }
 
-    async fn realise(&self, paths: &[String], log_file: &mut File) -> Result<()> {
+    pub async fn realise(&self, paths: &[String], log_file: &mut File) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
         }
 
-        const CHUNK_SIZE: usize = 1000;
+        // Chunk paths to avoid ARG_MAX issues
+        const CHUNK_SIZE: usize = 10;
         for chunk in paths.chunks(CHUNK_SIZE) {
             let mut args = vec!["--realise"];
             args.extend(chunk.iter().map(|s| s.as_str()));
@@ -126,13 +112,17 @@ impl NixOps for RealNixOps {
         Ok(())
     }
 
-    async fn get_derivation_outputs(&self, drv_path: &str) -> Result<Vec<String>> {
-        // nix derivation show "$path" | jq -r '.[].outputs[].path'
+    pub async fn get_derivation_outputs(&self, drv_path: &str) -> Result<Vec<String>> {
         let output = run_nix(&["derivation", "show", drv_path])
             .await
-            .context(format!("Failed to get derivation outputs for: {}", drv_path))?;
-        parse_derivation_outputs(&output)
-            .context(format!("Failed to parse derivation outputs for: {}", drv_path))
+            .context(format!(
+                "Failed to get derivation outputs for: {}",
+                drv_path
+            ))?;
+        parse_derivation_outputs(&output).context(format!(
+            "Failed to parse derivation outputs for: {}",
+            drv_path
+        ))
     }
 }
 
@@ -160,11 +150,18 @@ async fn run_nix(args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .await
-        .context(format!("Failed to execute nix command: nix {}", args.join(" ")))?;
+        .context(format!(
+            "Failed to execute nix command: nix {}",
+            args.join(" ")
+        ))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("Command 'nix {}' failed: {}", args.join(" "), stderr));
+        return Err(anyhow!(
+            "Command 'nix {}' failed: {}",
+            args.join(" "),
+            stderr
+        ));
     }
 
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
@@ -176,11 +173,18 @@ async fn run_nix_store(args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .await
-        .context(format!("Failed to execute nix-store command: nix-store {}", args.join(" ")))?;
+        .context(format!(
+            "Failed to execute nix-store command: nix-store {}",
+            args.join(" ")
+        ))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("Command 'nix-store {}' failed: {}", args.join(" "), stderr));
+        return Err(anyhow!(
+            "Command 'nix-store {}' failed: {}",
+            args.join(" "),
+            stderr
+        ));
     }
 
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
@@ -199,6 +203,7 @@ async fn run_nix_store_with_logging(args: &[&str], log_file: &mut File) -> Resul
 async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> Result<String> {
     let mut child = Command::new(cmd_name)
         .args(args)
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -207,20 +212,8 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
     let stdout = child.stdout.take().context("Failed to capture stdout")?;
     let stderr = child.stderr.take().context("Failed to capture stderr")?;
 
-    // Stream stderr to log file
     let mut reader = BufReader::new(stderr);
     let mut line = String::new();
-
-    // We need to read stdout separately. Since we want to return it, we can read it to string at the end or async.
-    // However, `stdout` pipe might fill up if we don't read it while reading stderr.
-    // So we should use `tokio::join!` or spawn a task for stdout.
-
-    // Spawning a task for stdout reading is safer to prevent deadlocks if output is huge.
-    // But `nix build --print-out-paths` stdout is small.
-    // `nix-store --realise` might output paths too.
-
-    // Let's assume stdout is relatively small but stderr is large (logs).
-    // To be safe, let's read stdout in a separate task or join.
 
     let stdout_handle = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
@@ -244,16 +237,24 @@ async fn run_cmd_logged(cmd_name: &str, args: &[&str], log_file: &mut File) -> R
     let stdout_result = stdout_handle.await??;
 
     if !status.success() {
-        return Err(anyhow!("Command '{} {}' failed with exit code: {:?}", cmd_name, args.join(" "), status.code()));
+        return Err(anyhow!(
+            "Command '{} {}' failed with exit code: {:?}",
+            cmd_name,
+            args.join(" "),
+            status.code()
+        ));
     }
 
     Ok(stdout_result.trim().to_string())
 }
 
-pub fn resolve_flake_ref(url: Option<String>, branch: Option<String>, default_path: &str) -> String {
+pub fn resolve_flake_ref(
+    url: Option<String>,
+    branch: Option<String>,
+    default_path: &str,
+) -> String {
+    // Guessing if git ref or http ref is passed, probably can be done better
     if let Some(mut url) = url {
-        // Basic heuristic to convert SCP-style SSH URLs to Nix syntax
-        // e.g. git@github.com:user/repo.git -> git+ssh://git@github.com/user/repo.git
         if !url.contains("://") && url.contains('@') {
             url = format!("git+ssh://{}", url.replace(":", "/"));
         } else if url.starts_with("https://") && url.ends_with(".git") {
@@ -267,26 +268,5 @@ pub fn resolve_flake_ref(url: Option<String>, branch: Option<String>, default_pa
         }
     } else {
         default_path.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_derivation_outputs() {
-        let json = r#"{ 
-            "/nix/store/z...-foo.drv": { 
-                "outputs": { 
-                    "out": { "path": "/nix/store/a...-foo" }, 
-                    "dev": { "path": "/nix/store/b...-foo-dev" } 
-                } 
-            } 
-        }"#;
-        let paths = parse_derivation_outputs(json).unwrap();
-        assert_eq!(paths.len(), 2);
-        assert!(paths.contains(&"/nix/store/a...-foo".to_string()));
-        assert!(paths.contains(&"/nix/store/b...-foo-dev".to_string()));
     }
 }

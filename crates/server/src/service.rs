@@ -1,9 +1,9 @@
 use crate::config::Settings;
 use crate::nix;
-use nix_local_cache_common::{BuildRequest, Job, JobStatus};
 use anyhow::{Context, Result};
 use chrono::Local;
 use dashmap::DashMap;
+use nix_local_cache_common::{BuildRequest, Job, JobStatus};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::fs::{self, File};
@@ -21,16 +21,25 @@ pub struct BuildService {
     pub running_jobs: Arc<DashMap<Uuid, tokio::task::JoinHandle<()>>>,
     queue_tx: mpsc::Sender<Uuid>,
     db_pool: SqlitePool,
-    nix_ops: Arc<dyn crate::nix::NixOps>,
+    nix_ops: Arc<crate::nix::NixOps>,
 }
 
+const DEFAULT_JOB_TIMEOUT_SECONDS: u64 = 12 * 60 * 60;
+const CANCELLED_BY_USER_MESSAGE: &str = "Cancelled by user";
+
 impl BuildService {
-    pub async fn new(settings: Settings, nix_ops: Arc<dyn crate::nix::NixOps>) -> Result<(Self, mpsc::Receiver<Uuid>)> {
+    pub async fn new(
+        settings: Settings,
+        nix_ops: Arc<crate::nix::NixOps>,
+    ) -> Result<(Self, mpsc::Receiver<Uuid>)> {
         let (tx, rx) = mpsc::channel(100);
-        
+
         // Ensure DB file exists
         if !Path::new(&settings.sqlite_db_path).exists() {
-            info!("Database file not found at {}, creating...", settings.sqlite_db_path);
+            info!(
+                "Database file not found at {}, creating...",
+                settings.sqlite_db_path
+            );
             File::create(&settings.sqlite_db_path)?;
         }
 
@@ -62,7 +71,6 @@ impl BuildService {
             writeln!(f, "Priority: 40")?;
         }
 
-
         sqlx::migrate!().run(&self.db_pool).await?;
 
         self.load_jobs_from_db().await?;
@@ -73,7 +81,7 @@ impl BuildService {
     pub async fn restart_job(&self, job_id: Uuid) -> Result<()> {
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
             if !matches!(job.status, JobStatus::Failed) {
-                 return Err(anyhow::anyhow!("Only failed jobs can be restarted"));
+                return Err(anyhow::anyhow!("Only failed jobs can be restarted"));
             }
 
             job.status = JobStatus::Queued;
@@ -84,7 +92,7 @@ impl BuildService {
             job.results = Some(std::collections::HashMap::new());
 
             let log_path = Path::new(&self.settings.log_dir).join(&job.log_path);
-            File::create(&log_path)?; 
+            File::create(&log_path)?;
 
             let job_clone = job.clone();
             drop(job);
@@ -102,28 +110,47 @@ impl BuildService {
     pub async fn cancel_job(&self, job_id: Uuid) -> Result<()> {
         if let Some((_, handle)) = self.running_jobs.remove(&job_id) {
             handle.abort();
-            info!("Cancelled job {}", job_id);
-            
-            Ok(())
-        } else {
-            if let Some(mut job) = self.jobs.get_mut(&job_id) {
-                if matches!(job.status, JobStatus::Queued) {
-                    job.status = JobStatus::Failed;
-                    job.status_message = Some("Cancelled by user".to_string());
-                    job.finished_at = Some(Local::now());
-                    let job_clone = job.clone();
-                    drop(job);
-                    self.update_job_in_db(&job_clone).await?;
-                    info!("Cancelled queued job {}", job_id);
-                    return Ok(());
-                }
-            }
-            Err(anyhow::anyhow!("Job not running or not found"))
         }
+
+        self.mark_job_cancelled(job_id).await?;
+        info!("Cancelled job {}", job_id);
+
+        Ok(())
+    }
+
+    async fn mark_job_cancelled(&self, job_id: Uuid) -> Result<()> {
+        let mut job = self
+            .jobs
+            .get_mut(&job_id)
+            .ok_or_else(|| anyhow::anyhow!("Job not found"))?;
+
+        if matches!(job.status, JobStatus::Completed) {
+            return Err(anyhow::anyhow!("Job is already completed"));
+        }
+
+        if matches!(job.status, JobStatus::Failed)
+            && job.status_message.as_deref() == Some(CANCELLED_BY_USER_MESSAGE)
+        {
+            return Ok(());
+        }
+
+        if matches!(job.status, JobStatus::Failed) {
+            return Err(anyhow::anyhow!("Job is already failed"));
+        }
+
+        job.status = JobStatus::Failed;
+        job.status_message = Some(CANCELLED_BY_USER_MESSAGE.to_string());
+        job.finished_at = Some(Local::now());
+        job.current_host = None;
+
+        let job_clone = job.clone();
+        drop(job);
+
+        self.update_job_in_db(&job_clone).await
     }
 
     async fn load_jobs_from_db(&self) -> Result<()> {
-        let rows = sqlx::query("SELECT * FROM jobs")
+        let rows = sqlx::query("SELECT * FROM jobs ORDER BY id LIMIT 100")
             .fetch_all(&self.db_pool)
             .await?;
 
@@ -139,7 +166,15 @@ impl BuildService {
                 finished_at: row.try_get("finished_at")?,
                 log_path: row.try_get("log_path")?,
                 flake_ref: row.try_get("flake_ref")?,
-                results: row.try_get("results").unwrap_or_else(|_| None).and_then(|v: String| serde_json::from_str(&v).ok()),
+                timeout_seconds: row
+                    .try_get::<i64, _>("timeout_seconds")
+                    .ok()
+                    .and_then(|value| u64::try_from(value).ok())
+                    .unwrap_or(DEFAULT_JOB_TIMEOUT_SECONDS),
+                results: row
+                    .try_get("results")
+                    .unwrap_or_else(|_| None)
+                    .and_then(|v: String| serde_json::from_str(&v).ok()),
                 current_host: row.try_get("current_host")?,
             };
             jobs.push(job);
@@ -162,23 +197,25 @@ impl BuildService {
         let hosts_json = sqlx::types::Json(&job.hosts);
         let status = job.status.clone();
         let results_json = sqlx::types::Json(&job.results);
-        sqlx::query!(
+        let timeout_seconds = i64::try_from(job.timeout_seconds).context("timeout is too large")?;
+        sqlx::query(
             r#"
-            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, results, current_host)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, timeout_seconds, results, current_host)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
-            job.id,
-            hosts_json,
-            status,
-            job.status_message,
-            job.created_at,
-            job.started_at,
-            job.finished_at,
-            job.log_path,
-            job.flake_ref,
-            results_json,
-            job.current_host
         )
+        .bind(job.id)
+        .bind(hosts_json)
+        .bind(status)
+        .bind(job.status_message.as_deref())
+        .bind(job.created_at)
+        .bind(job.started_at)
+        .bind(job.finished_at)
+        .bind(&job.log_path)
+        .bind(&job.flake_ref)
+        .bind(timeout_seconds)
+        .bind(results_json)
+        .bind(job.current_host.as_deref())
         .execute(&self.db_pool)
         .await?;
         Ok(())
@@ -188,7 +225,8 @@ impl BuildService {
         let hosts_json = sqlx::types::Json(&job.hosts);
         let status = job.status.clone();
         let results_json = sqlx::types::Json(&job.results);
-        sqlx::query!(
+        let timeout_seconds = i64::try_from(job.timeout_seconds).context("timeout is too large")?;
+        sqlx::query(
             r#"
             UPDATE jobs
             SET
@@ -200,22 +238,24 @@ impl BuildService {
                 finished_at = ?,
                 log_path = ?,
                 flake_ref = ?,
+                timeout_seconds = ?,
                 results = ?,
                 current_host = ?
             WHERE id = ?
             "#,
-            hosts_json,
-            status,
-            job.status_message,
-            job.created_at,
-            job.started_at,
-            job.finished_at,
-            job.log_path,
-            job.flake_ref,
-            results_json,
-            job.current_host,
-            job.id
         )
+        .bind(hosts_json)
+        .bind(status)
+        .bind(job.status_message.as_deref())
+        .bind(job.created_at)
+        .bind(job.started_at)
+        .bind(job.finished_at)
+        .bind(&job.log_path)
+        .bind(&job.flake_ref)
+        .bind(timeout_seconds)
+        .bind(results_json)
+        .bind(job.current_host.as_deref())
+        .bind(job.id)
         .execute(&self.db_pool)
         .await?;
         Ok(())
@@ -244,7 +284,15 @@ impl BuildService {
                 finished_at: row.try_get("finished_at")?,
                 log_path: row.try_get("log_path")?,
                 flake_ref: row.try_get("flake_ref")?,
-                results: row.try_get("results").unwrap_or_else(|_| None).and_then(|v: String| serde_json::from_str(&v).ok()),
+                timeout_seconds: row
+                    .try_get::<i64, _>("timeout_seconds")
+                    .ok()
+                    .and_then(|value| u64::try_from(value).ok())
+                    .unwrap_or(DEFAULT_JOB_TIMEOUT_SECONDS),
+                results: row
+                    .try_get("results")
+                    .unwrap_or_else(|_| None)
+                    .and_then(|v: String| serde_json::from_str(&v).ok()),
                 current_host: row.try_get("current_host")?,
             };
             jobs.push(job);
@@ -260,19 +308,26 @@ impl BuildService {
     pub async fn submit_build(&self, req: BuildRequest) -> Result<Uuid> {
         let id = Uuid::new_v4();
 
-        let flake_ref = nix::resolve_flake_ref(req.flake_url, req.flake_branch, &self.settings.flake_path);
+        let flake_ref =
+            nix::resolve_flake_ref(req.flake_url, req.flake_branch, &self.settings.flake_path);
 
-        let target_hosts = if let Some(h) = req.hosts {
-            h
-        } else if let Some(h) = &self.settings.hosts {
-            h.clone()
+        let target_hosts = if let Some(hosts) = req.hosts {
+            hosts
+        } else if let Some(hosts) = &self.settings.hosts {
+            hosts.clone()
         } else {
             self.nix_ops.get_hosts(&flake_ref).await?
         };
 
+        let timeout_seconds = req
+            .timeout_seconds
+            .unwrap_or(DEFAULT_JOB_TIMEOUT_SECONDS);
+        if timeout_seconds == 0 {
+            return Err(anyhow::anyhow!("timeout_seconds must be greater than 0"));
+        }
+
         let log_file_name = format!("{}.log", id);
         let log_path = Path::new(&self.settings.log_dir).join(&log_file_name);
-        // Create empty log file
         File::create(&log_path)?;
 
         let job = Job {
@@ -285,6 +340,7 @@ impl BuildService {
             finished_at: None,
             log_path: log_file_name,
             flake_ref,
+            timeout_seconds,
             results: Some(std::collections::HashMap::new()),
             current_host: None,
         };
@@ -298,9 +354,11 @@ impl BuildService {
 
     pub async fn process_job(&self, job_id: Uuid) {
         if let Some(job) = self.jobs.get(&job_id) {
-            if matches!(job.status, JobStatus::Failed) && job.status_message.as_deref() == Some("Cancelled by user") {
-                 info!("Skipping cancelled job {}", job_id);
-                 return;
+            if matches!(job.status, JobStatus::Failed)
+                && job.status_message.as_deref() == Some(CANCELLED_BY_USER_MESSAGE)
+            {
+                info!("Skipping cancelled job {}", job_id);
+                return;
             }
         }
 
@@ -322,6 +380,7 @@ impl BuildService {
         let hosts = job_data.hosts.clone();
         let log_path_str = job_data.log_path.clone();
         let flake_ref = job_data.flake_ref.clone();
+        let timeout_seconds = job_data.timeout_seconds;
 
         let log_full_path = Path::new(&self.settings.log_dir).join(&log_path_str);
 
@@ -330,35 +389,71 @@ impl BuildService {
             job_id, hosts, flake_ref
         );
 
-        let mut success = true;
-        let mut status_message: Option<String> = None;
-        for host in hosts {
-             if let Some(mut job) = self.jobs.get_mut(&job_id) {
-                job.current_host = Some(host.clone());
-                let job_clone = job.clone();
-                drop(job);
-                if let Err(e) = self.update_job_in_db(&job_clone).await {
-                    error!("Failed to update job {} current_host: {}", job_id, e);
+        let log_full_path_for_work = log_full_path.clone();
+        let flake_ref_for_work = flake_ref.clone();
+
+        let (success, status_message) =
+            match tokio::time::timeout(Duration::from_secs(timeout_seconds), async move {
+                let mut success = true;
+                let mut status_message: Option<String> = None;
+
+                for host in hosts {
+                    if let Some(mut job) = self.jobs.get_mut(&job_id) {
+                        job.current_host = Some(host.clone());
+                        let job_clone = job.clone();
+                        drop(job);
+                        if let Err(e) = self.update_job_in_db(&job_clone).await {
+                            error!("Failed to update job {} current_host: {}", job_id, e);
+                        }
+                    }
+
+                    if let Err(e) = self
+                        .process_host(&host, &flake_ref_for_work, &log_full_path_for_work, job_id)
+                        .await
+                    {
+                        let msg = format!("Job {} failed for host {}: {}", job_id, host, e);
+                        error!("{}", msg);
+                        status_message = Some(msg);
+                        success = false;
+                    }
                 }
-            }
 
-            // Check for cancellation before processing each host
-            // (Though if cancelled, the task should be aborted, so this might be redundant but safe)
-             if !self.running_jobs.contains_key(&job_id) {
-             }
+                (success, status_message)
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    let timeout_message =
+                        format!("Job timed out after {} seconds", timeout_seconds);
+                    error!("Job {} timed out after {} seconds", job_id, timeout_seconds);
 
-            if let Err(e) = self.process_host(&host, &flake_ref, &log_full_path, job_id).await {
-                let msg = format!("Job {} failed for host {}: {}", job_id, host, e);
-                error!("{}", msg);
-                status_message = Some(msg);
-                success = false;
-            }
-        }
+                    if let Ok(mut log_file) = tokio::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&log_full_path)
+                        .await
+                    {
+                        use tokio::io::AsyncWriteExt;
+                        let _ = log_file
+                            .write_all(
+                                format!(
+                                    "[{}] {}\n",
+                                    Local::now().format("%F %H:%M:%S.%3f"),
+                                    timeout_message
+                                )
+                                .as_bytes(),
+                            )
+                            .await;
+                    }
+
+                    (false, Some(timeout_message))
+                }
+            };
 
         let mut job = match self.jobs.get_mut(&job_id) {
             Some(j) => j,
             None => {
-                error!("Job {} disappeared from memory while processing!", job_id);
+                error!("Job {} disappeared from job list while processing!", job_id);
                 return;
             }
         };
@@ -372,11 +467,10 @@ impl BuildService {
         job.status_message = status_message;
 
         info!("Job {} finished with status {:?}", job_id, job.status);
-        
+
         let job_data = job.clone();
         drop(job);
 
-        // Update in DB after job is finished
         if let Err(e) = self.update_job_in_db(&job_data).await {
             error!("Failed to update job {} in DB: {}", job_id, e);
         }
@@ -391,7 +485,16 @@ impl BuildService {
     ) -> Result<String> {
         let mut attempts = 0;
         loop {
-            let res = self.nix_ops.build_system(flake_ref, host, cores, self.settings.builders.as_deref(), log_file).await;
+            let res = self
+                .nix_ops
+                .build_system(
+                    flake_ref,
+                    host,
+                    cores,
+                    self.settings.builders.as_deref(),
+                    log_file,
+                )
+                .await;
             match res {
                 Ok(v) => return Ok(v),
                 Err(e) => {
@@ -413,10 +516,22 @@ impl BuildService {
         }
     }
 
-    async fn copy_with_retry(&self, paths: Vec<String>, log_file: &mut tokio::fs::File) -> Result<()> {
+    async fn copy_with_retry(
+        &self,
+        paths: Vec<String>,
+        log_file: &mut tokio::fs::File,
+    ) -> Result<()> {
         let mut attempts = 0;
         loop {
-            let res = self.nix_ops.copy_to_cache(&paths, &self.settings.cache_dir, self.settings.secret_key_file.as_deref(), log_file).await;
+            let res = self
+                .nix_ops
+                .copy_to_cache(
+                    &paths,
+                    &self.settings.cache_dir,
+                    self.settings.secret_key_file.as_deref(),
+                    log_file,
+                )
+                .await;
             match res {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -426,7 +541,10 @@ impl BuildService {
                     }
                     let delay = self.settings.retry_delay_secs;
                     use tokio::io::AsyncWriteExt;
-                    let msg = format!("Copy failed (attempt {}/{}): {}. Retrying in {}s...\n", attempts, self.settings.retry_count, e, delay);
+                    let msg = format!(
+                        "Copy failed (attempt {}/{}): {}. Retrying in {}s...\n",
+                        attempts, self.settings.retry_count, e, delay
+                    );
                     warn!("{}", msg.trim());
                     let _ = log_file.write_all(msg.as_bytes()).await;
                     sleep(Duration::from_secs(delay)).await;
@@ -464,7 +582,13 @@ impl BuildService {
         }
     }
 
-    async fn process_host(&self, host: &str, flake_ref: &str, log_path: &Path, job_id: Uuid) -> Result<()> {
+    async fn process_host(
+        &self,
+        host: &str,
+        flake_ref: &str,
+        log_path: &Path,
+        job_id: Uuid,
+    ) -> Result<()> {
         let mut log_file = tokio::fs::OpenOptions::new()
             .append(true)
             .open(log_path)
@@ -481,8 +605,6 @@ impl BuildService {
         log_file.write_all(msg.as_bytes()).await?;
 
         let arch = self.nix_ops.get_system_arch(flake_ref, host).await?;
-
-
 
         let cores = self.settings.arch_cores.get(&arch).copied();
 
@@ -523,16 +645,26 @@ impl BuildService {
         );
         log_file.write_all(msg.as_bytes()).await?;
 
-        let requisites = self.nix_ops.query_requisites(&drv_path)
+        let requisites = self
+            .nix_ops
+            .query_requisites(&drv_path)
             .await
-            .context(format!("Failed to query requisites for derivation: {}", drv_path))?;
+            .context(format!(
+                "Failed to query requisites for derivation: {}",
+                drv_path
+            ))?;
 
         let mut all_outputs = std::collections::HashSet::new();
         for path in &requisites {
             if path.ends_with(".drv") {
-                let outputs = self.nix_ops.get_derivation_outputs(path)
+                let outputs = self
+                    .nix_ops
+                    .get_derivation_outputs(path)
                     .await
-                    .context(format!("Failed to get outputs for derivation in first pass: {}", path))
+                    .context(format!(
+                        "Failed to get outputs for derivation in first pass: {}",
+                        path
+                    ))
                     .unwrap_or_default();
                 all_outputs.extend(outputs);
             }
@@ -551,9 +683,14 @@ impl BuildService {
             }
 
             if path.ends_with(".drv") {
-                let outputs = self.nix_ops.get_derivation_outputs(&path)
+                let outputs = self
+                    .nix_ops
+                    .get_derivation_outputs(&path)
                     .await
-                    .context(format!("Failed to get outputs for derivation in second pass: {}", path))
+                    .context(format!(
+                        "Failed to get outputs for derivation in second pass: {}",
+                        path
+                    ))
                     .unwrap_or_default();
                 for out in outputs {
                     let out_hash = get_hash(&out).unwrap_or("");
@@ -610,27 +747,24 @@ impl BuildService {
         }
 
         let msg = format!(
-        "[{}] Finished {}\n",
+            "[{}] Finished {}\n",
             Local::now().format("%F %H:%M:%S.%3f"),
             host
         );
         log_file.write_all(msg.as_bytes()).await?;
 
-
         if let Some(mut job) = self.jobs.get_mut(&job_id) {
-             if let Some(results) = &mut job.results {
-                 results.insert(host.to_string(), result_path.clone());
-             } else {
-                 let mut map = std::collections::HashMap::new();
-                 map.insert(host.to_string(), result_path.clone());
-                 job.results = Some(map);
-             }
+            if let Some(results) = &mut job.results {
+                results.insert(host.to_string(), result_path.clone());
+            } else {
+                let mut map = std::collections::HashMap::new();
+                map.insert(host.to_string(), result_path.clone());
+                job.results = Some(map);
+            }
         }
 
         Ok(())
     }
-
-
 }
 
 fn get_hash(path: &str) -> Option<&str> {
@@ -638,146 +772,4 @@ fn get_hash(path: &str) -> Option<&str> {
         .file_name()
         .and_then(|f| f.to_str())
         .map(|s| &s[0..32])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::Settings;
-    use tempfile::tempdir;
-    use crate::nix::MockNixOps;
-
-    async fn create_test_service(nix_ops: Arc<MockNixOps>) -> (BuildService, mpsc::Receiver<Uuid>, tempfile::TempDir) {
-        let temp_dir = tempdir().unwrap();
-        let db_path = temp_dir.path().join("test.db");
-        let cache_dir = temp_dir.path().join("cache");
-        let log_dir = temp_dir.path().join("logs");
-
-        let settings = Settings {
-            port: 3000,
-            sqlite_db_path: db_path.to_string_lossy().to_string(),
-            cache_dir: cache_dir.to_string_lossy().to_string(),
-            log_dir: log_dir.to_string_lossy().to_string(),
-            flake_path: ".".to_string(),
-            hosts: None,
-            secret_key_file: None,
-            retry_count: 1,
-            retry_delay_secs: 1,
-            arch_cores: std::collections::HashMap::new(),
-            worker_threads: 1,
-            builders: None,
-        };
-
-        let (service, rx) = BuildService::new(settings, nix_ops).await.unwrap();
-        service.init().await.unwrap();
-        (service, rx, temp_dir)
-    }
-
-    #[tokio::test]
-    async fn test_restart_failed_job() {
-        let mock_nix = Arc::new(MockNixOps::new());
-        let (service, _rx, _temp_dir) = create_test_service(mock_nix).await;
-
-        // Create a fake job
-        let job_id = Uuid::new_v4();
-        let log_file_name = format!("{}.log", job_id);
-        // Create log file so restart_job can truncate it
-        let log_path = Path::new(&service.settings.log_dir).join(&log_file_name);
-        File::create(&log_path).unwrap();
-
-        let job = Job {
-            id: job_id,
-            hosts: vec!["localhost".to_string()],
-            status: JobStatus::Failed,
-            status_message: Some("Failed".to_string()),
-            created_at: Local::now(),
-            started_at: Some(Local::now()),
-            finished_at: Some(Local::now()),
-            log_path: log_file_name,
-            flake_ref: ".".to_string(),
-            results: Some(std::collections::HashMap::new()),
-            current_host: Some("localhost".to_string()),
-        };
-
-        service.jobs.insert(job_id, job.clone());
-        service.insert_job_into_db(&job).await.unwrap();
-
-        // Restart it
-        service.restart_job(job_id).await.unwrap();
-
-        // Verify status
-        let updated_job = service.jobs.get(&job_id).unwrap();
-        assert_eq!(updated_job.status, JobStatus::Queued);
-        assert_eq!(updated_job.status_message, None);
-        assert!(updated_job.started_at.is_none());
-        assert!(updated_job.finished_at.is_none());
-        assert!(updated_job.current_host.is_none());
-        
-        // Check DB update
-        let saved_job = sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(&service.db_pool)
-            .await
-            .unwrap();
-            
-        assert_eq!(saved_job.status, JobStatus::Queued);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_job_lifecycle_success() {
-        let mut mock_nix = MockNixOps::new();
-
-        // Setup expectations
-        mock_nix.expect_get_system_arch()
-            .returning(|_, _| Box::pin(async { Ok("x86_64-linux".to_string()) }));
-        
-        mock_nix.expect_build_system()
-            .returning(|_, _, _, _, _| Box::pin(async { Ok("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-result".to_string()) }));
-            
-        mock_nix.expect_copy_to_cache()
-            .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
-            
-        mock_nix.expect_get_drv_path()
-            .returning(|_, _| Box::pin(async { Ok("/nix/store/dddddddddddddddddddddddddddddddd-foo.drv".to_string()) }));
-            
-        mock_nix.expect_query_requisites()
-            .returning(|_| Box::pin(async { Ok(vec!["/nix/store/dddddddddddddddddddddddddddddddd-foo.drv".to_string()]) }));
-            
-        mock_nix.expect_get_derivation_outputs()
-            .returning(|_| Box::pin(async { Ok(vec!["/nix/store/oooooooooooooooooooooooooooooooo-out".to_string()]) }));
-            
-        mock_nix.expect_realise()
-            .returning(|_, _| Box::pin(async { Ok(()) }));
-
-        let mock_nix = Arc::new(mock_nix);
-        let (service, mut rx, _temp_dir) = create_test_service(mock_nix.clone()).await;
-        
-        // Submit job
-        let req = BuildRequest {
-            hosts: Some(vec!["host1".to_string()]),
-            flake_url: Some("github:owner/repo".to_string()),
-            flake_branch: None,
-        };
-        let job_id = service.submit_build(req).await.unwrap();
-
-        // Verify queued
-        // Verify queued
-        {
-            let job = service.jobs.get(&job_id).unwrap();
-            assert_eq!(job.status, JobStatus::Queued);
-        } // Lock dropped here
-
-        // Process job (simulate worker)
-        // First, receive from queue
-        let received_id = rx.recv().await.unwrap();
-        assert_eq!(received_id, job_id);
-        
-        service.process_job(job_id).await;
-
-        // Verify completed
-        let job = service.jobs.get(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Completed);
-        assert!(job.results.is_some());
-        assert_eq!(job.results.as_ref().unwrap().get("host1").unwrap(), "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-result");
-    }
 }

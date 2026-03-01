@@ -13,6 +13,7 @@ interface BuildPayload {
   flake_url?: string
   flake_branch?: string
   hosts?: string[]
+  timeout_seconds?: number
 }
 
 export const Route = createFileRoute('/build/new')({
@@ -24,6 +25,7 @@ function NewBuild() {
   const [flakeUrl, setFlakeUrl] = useState('')
   const [branch, setBranch] = useState('')
   const [hosts, setHosts] = useState('')
+  const [timeoutSeconds, setTimeoutSeconds] = useState('')
   
   const [availableHosts, setAvailableHosts] = useState<string[]>([])
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set())
@@ -35,6 +37,15 @@ function NewBuild() {
       const payload: BuildPayload = {}
       if (flakeUrl) payload.flake_url = flakeUrl
       if (branch) payload.flake_branch = branch
+
+      const timeoutValue = timeoutSeconds.trim()
+      if (timeoutValue) {
+        const parsedTimeout = Number.parseInt(timeoutValue, 10)
+        if (!Number.isInteger(parsedTimeout) || parsedTimeout <= 0) {
+          throw new Error('Timeout must be a positive number of seconds.')
+        }
+        payload.timeout_seconds = parsedTimeout
+      }
       
       if (availableHosts.length > 0) {
         // If using selection mode, use selected hosts
@@ -136,6 +147,19 @@ function NewBuild() {
                 value={branch}
                 onChange={e => setBranch(e.target.value)}
               />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Timeout in Seconds (Optional)</label>
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                placeholder="43200"
+                value={timeoutSeconds}
+                onChange={e => setTimeoutSeconds(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">Defaults to 43200 seconds (12 hours) when left empty.</p>
             </div>
 
             <div className="space-y-2">
