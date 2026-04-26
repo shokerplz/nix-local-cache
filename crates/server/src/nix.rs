@@ -23,7 +23,7 @@ impl NixOps {
 
     pub async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String> {
         let attr = format!(
-            "{}#nixosConfigurations.{}.config.nixpkgs.system",
+            "{}#nixosConfigurations.{}.pkgs.stdenv.hostPlatform.system",
             flake_path, host
         );
         run_nix(&["eval", "--raw", &attr]).await
