@@ -33,14 +33,15 @@ impl NixOps {
         host: &str,
         target_type: &BuildTarget,
     ) -> Result<String> {
+        let host_attr = quote_attr_segment(host)?;
         let attr = match target_type {
             BuildTarget::Nixos => format!(
                 "{}#nixosConfigurations.{}.pkgs.stdenv.hostPlatform.system",
-                flake_path, host
+                flake_path, host_attr
             ),
             BuildTarget::HomeManager => format!(
                 "{}#homeConfigurations.{}.activationPackage.system",
-                flake_path, host
+                flake_path, host_attr
             ),
         };
         run_nix(&["eval", "--raw", &attr]).await
@@ -52,11 +53,12 @@ impl NixOps {
         host: &str,
         target_type: &BuildTarget,
     ) -> Result<String> {
+        let host_attr = quote_attr_segment(host)?;
         let attr = format!(
             "{}#{}.{}.{}.drvPath",
             flake_path,
             flake_configurations_attr(target_type),
-            host,
+            host_attr,
             build_output_attr(target_type)
         );
         run_nix(&["eval", "--raw", &attr]).await
@@ -71,11 +73,12 @@ impl NixOps {
         builders: Option<&str>,
         log_file: &mut File,
     ) -> Result<String> {
+        let host_attr = quote_attr_segment(host)?;
         let attr = format!(
             "{}#{}.{}.{}",
             flake_path,
             flake_configurations_attr(target_type),
-            host,
+            host_attr,
             build_output_attr(target_type)
         );
         let mut args = vec!["build", &attr, "--print-out-paths", "--print-build-logs"];
@@ -167,6 +170,10 @@ fn build_output_attr(target_type: &BuildTarget) -> &'static str {
         BuildTarget::Nixos => "config.system.build.toplevel",
         BuildTarget::HomeManager => "activationPackage",
     }
+}
+
+fn quote_attr_segment(segment: &str) -> Result<String> {
+    Ok(serde_json::to_string(segment)?)
 }
 
 fn parse_derivation_outputs(json_output: &str) -> Result<Vec<String>> {
