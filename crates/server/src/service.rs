@@ -3,7 +3,7 @@ use crate::nix;
 use anyhow::{Context, Result};
 use chrono::Local;
 use dashmap::DashMap;
-use nix_local_cache_common::{BuildRequest, Job, JobStatus};
+use nix_local_cache_common::{BuildRequest, BuildTarget, Job, JobStatus};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::fs::{self, File};
@@ -166,6 +166,7 @@ impl BuildService {
                 finished_at: row.try_get("finished_at")?,
                 log_path: row.try_get("log_path")?,
                 flake_ref: row.try_get("flake_ref")?,
+                target_type: row.try_get("target_type").unwrap_or(BuildTarget::Nixos),
                 timeout_seconds: row
                     .try_get::<i64, _>("timeout_seconds")
                     .ok()
@@ -200,8 +201,8 @@ impl BuildService {
         let timeout_seconds = i64::try_from(job.timeout_seconds).context("timeout is too large")?;
         sqlx::query(
             r#"
-            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, timeout_seconds, results, current_host)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs (id, hosts, status, status_message, created_at, started_at, finished_at, log_path, flake_ref, target_type, timeout_seconds, results, current_host)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(job.id)
@@ -213,6 +214,7 @@ impl BuildService {
         .bind(job.finished_at)
         .bind(&job.log_path)
         .bind(&job.flake_ref)
+        .bind(job.target_type.clone())
         .bind(timeout_seconds)
         .bind(results_json)
         .bind(job.current_host.as_deref())
@@ -238,6 +240,7 @@ impl BuildService {
                 finished_at = ?,
                 log_path = ?,
                 flake_ref = ?,
+                target_type = ?,
                 timeout_seconds = ?,
                 results = ?,
                 current_host = ?
@@ -252,6 +255,7 @@ impl BuildService {
         .bind(job.finished_at)
         .bind(&job.log_path)
         .bind(&job.flake_ref)
+        .bind(job.target_type.clone())
         .bind(timeout_seconds)
         .bind(results_json)
         .bind(job.current_host.as_deref())
@@ -284,6 +288,7 @@ impl BuildService {
                 finished_at: row.try_get("finished_at")?,
                 log_path: row.try_get("log_path")?,
                 flake_ref: row.try_get("flake_ref")?,
+                target_type: row.try_get("target_type").unwrap_or(BuildTarget::Nixos),
                 timeout_seconds: row
                     .try_get::<i64, _>("timeout_seconds")
                     .ok()
@@ -301,8 +306,12 @@ impl BuildService {
         Ok((jobs, total_count))
     }
 
-    pub async fn get_hosts(&self, flake_ref: &str) -> Result<Vec<String>> {
-        self.nix_ops.get_hosts(flake_ref).await
+    pub async fn get_hosts(
+        &self,
+        flake_ref: &str,
+        target_type: &BuildTarget,
+    ) -> Result<Vec<String>> {
+        self.nix_ops.get_hosts(flake_ref, target_type).await
     }
 
     pub async fn submit_build(&self, req: BuildRequest) -> Result<Uuid> {
@@ -310,18 +319,17 @@ impl BuildService {
 
         let flake_ref =
             nix::resolve_flake_ref(req.flake_url, req.flake_branch, &self.settings.flake_path);
+        let target_type = req.target_type.unwrap_or(BuildTarget::Nixos);
 
         let target_hosts = if let Some(hosts) = req.hosts {
             hosts
         } else if let Some(hosts) = &self.settings.hosts {
             hosts.clone()
         } else {
-            self.nix_ops.get_hosts(&flake_ref).await?
+            self.nix_ops.get_hosts(&flake_ref, &target_type).await?
         };
 
-        let timeout_seconds = req
-            .timeout_seconds
-            .unwrap_or(DEFAULT_JOB_TIMEOUT_SECONDS);
+        let timeout_seconds = req.timeout_seconds.unwrap_or(DEFAULT_JOB_TIMEOUT_SECONDS);
         if timeout_seconds == 0 {
             return Err(anyhow::anyhow!("timeout_seconds must be greater than 0"));
         }
@@ -340,6 +348,7 @@ impl BuildService {
             finished_at: None,
             log_path: log_file_name,
             flake_ref,
+            target_type,
             timeout_seconds,
             results: Some(std::collections::HashMap::new()),
             current_host: None,
@@ -380,6 +389,7 @@ impl BuildService {
         let hosts = job_data.hosts.clone();
         let log_path_str = job_data.log_path.clone();
         let flake_ref = job_data.flake_ref.clone();
+        let target_type = job_data.target_type.clone();
         let timeout_seconds = job_data.timeout_seconds;
 
         let log_full_path = Path::new(&self.settings.log_dir).join(&log_path_str);
@@ -408,7 +418,13 @@ impl BuildService {
                     }
 
                     if let Err(e) = self
-                        .process_host(&host, &flake_ref_for_work, &log_full_path_for_work, job_id)
+                        .process_host(
+                            &host,
+                            &flake_ref_for_work,
+                            &target_type,
+                            &log_full_path_for_work,
+                            job_id,
+                        )
                         .await
                     {
                         let msg = format!("Job {} failed for host {}: {}", job_id, host, e);
@@ -480,6 +496,7 @@ impl BuildService {
         &self,
         flake_ref: &str,
         host: &str,
+        target_type: &BuildTarget,
         cores: Option<u32>,
         log_file: &mut tokio::fs::File,
     ) -> Result<String> {
@@ -487,9 +504,10 @@ impl BuildService {
         loop {
             let res = self
                 .nix_ops
-                .build_system(
+                .build_config(
                     flake_ref,
                     host,
+                    target_type,
                     cores,
                     self.settings.builders.as_deref(),
                     log_file,
@@ -586,6 +604,7 @@ impl BuildService {
         &self,
         host: &str,
         flake_ref: &str,
+        target_type: &BuildTarget,
         log_path: &Path,
         job_id: Uuid,
     ) -> Result<()> {
@@ -597,19 +616,26 @@ impl BuildService {
         use tokio::io::AsyncWriteExt;
 
         let timestamp = Local::now().format("%F %H:%M:%S.%3f");
+        let target_label = match target_type {
+            BuildTarget::Nixos => "NixOS system",
+            BuildTarget::HomeManager => "Home Manager configuration",
+        };
         let msg = format!(
-            "[{}] Building NixOS system for {} using {}\n",
-            timestamp, host, flake_ref
+            "[{}] Building {} for {} using {}\n",
+            timestamp, target_label, host, flake_ref
         );
         info!("{}", msg.trim());
         log_file.write_all(msg.as_bytes()).await?;
 
-        let arch = self.nix_ops.get_system_arch(flake_ref, host).await?;
+        let arch = self
+            .nix_ops
+            .get_system_arch(flake_ref, host, target_type)
+            .await?;
 
         let cores = self.settings.arch_cores.get(&arch).copied();
 
         let result_path = match self
-            .build_with_retry(flake_ref, host, cores, &mut log_file)
+            .build_with_retry(flake_ref, host, target_type, cores, &mut log_file)
             .await
         {
             Ok(path) => path,
@@ -622,8 +648,9 @@ impl BuildService {
         };
 
         let msg = format!(
-            "[{}] Built system: {}\n",
+            "[{}] Built {}: {}\n",
             Local::now().format("%F %H:%M:%S.%3f"),
+            target_label,
             result_path
         );
         log_file.write_all(msg.as_bytes()).await?;
@@ -637,7 +664,10 @@ impl BuildService {
         self.copy_with_retry(vec![result_path.clone()], &mut log_file)
             .await?;
 
-        let drv_path = self.nix_ops.get_drv_path(flake_ref, host).await?;
+        let drv_path = self
+            .nix_ops
+            .get_drv_path(flake_ref, host, target_type)
+            .await?;
 
         let msg = format!(
             "[{}] calculating full closure...\n",

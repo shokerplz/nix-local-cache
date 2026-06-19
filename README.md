@@ -126,7 +126,7 @@ cargo build -p nix-local-cache-client --release
 
 ## Installation via Nix Flakes
 
-You can consume this project as a Flake input in your NixOS configuration.
+You can consume this project as a Flake input in your NixOS configuration. The build service can build either `nixosConfigurations.<name>.config.system.build.toplevel` or `homeConfigurations.<name>.activationPackage` from the target flake.
 
 **flake.nix:**
 ```nix
@@ -169,6 +169,10 @@ environment.systemPackages = [
   inputs.nix-local-cache.packages.${pkgs.system}.client
 ];
 ```
+
+When triggering a build from the web UI, choose **NixOS configuration** or **Home Manager configuration**. For API callers, set `target_type` to `"Nixos"` or `"HomeManager"`; omitted values default to `"Nixos"`.
+
+The client applies completed NixOS builds by switching `/nix/var/nix/profiles/system`. It applies completed Home Manager builds by setting `$HOME/.local/state/nix/profiles/home-manager` and running the generation's `activate` script.
 
 ## Development Workflow
 

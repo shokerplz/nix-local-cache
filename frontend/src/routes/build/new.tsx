@@ -12,6 +12,7 @@ import { API_BASE_URL } from '../../lib/config'
 interface BuildPayload {
   flake_url?: string
   flake_branch?: string
+  target_type?: 'Nixos' | 'HomeManager'
   hosts?: string[]
   timeout_seconds?: number
 }
@@ -24,6 +25,7 @@ function NewBuild() {
   const navigate = useNavigate()
   const [flakeUrl, setFlakeUrl] = useState('')
   const [branch, setBranch] = useState('')
+  const [targetType, setTargetType] = useState<'Nixos' | 'HomeManager'>('Nixos')
   const [hosts, setHosts] = useState('')
   const [timeoutSeconds, setTimeoutSeconds] = useState('')
   
@@ -37,6 +39,7 @@ function NewBuild() {
       const payload: BuildPayload = {}
       if (flakeUrl) payload.flake_url = flakeUrl
       if (branch) payload.flake_branch = branch
+      payload.target_type = targetType
 
       const timeoutValue = timeoutSeconds.trim()
       if (timeoutValue) {
@@ -79,6 +82,7 @@ function NewBuild() {
       const params = new URLSearchParams()
       if (flakeUrl) params.append('flake_url', flakeUrl)
       if (branch) params.append('branch', branch)
+      params.append('target_type', targetType)
       
       const res = await axios.get<string[]>(`${API_BASE_URL}/flake/hosts?${params.toString()}`)
       const hosts = res.data
@@ -131,6 +135,21 @@ function NewBuild() {
         <CardContent className="px-4 sm:px-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
+              <label className="text-sm font-medium">Target Type</label>
+              <select
+                className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                value={targetType}
+                onChange={e => {
+                  setTargetType(e.target.value as 'Nixos' | 'HomeManager')
+                  clearHosts()
+                }}
+              >
+                <option value="Nixos">NixOS configuration</option>
+                <option value="HomeManager">Home Manager configuration</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
               <label className="text-sm font-medium">Flake URL (Optional)</label>
               <Input
                 placeholder="git+https://github.com/owner/repo.git"
@@ -164,7 +183,7 @@ function NewBuild() {
 
             <div className="space-y-2">
               <div className="flex justify-between items-center">
-                <label className="text-sm font-medium">Hosts</label>
+                <label className="text-sm font-medium">{targetType === 'Nixos' ? 'Hosts' : 'Home Manager configs'}</label>
                 {availableHosts.length === 0 ? (
                     <Button 
                         type="button" 
@@ -175,7 +194,7 @@ function NewBuild() {
                         className="h-8 text-xs"
                     >
                         {isFetchingHosts ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-2 h-3 w-3" />}
-                        Fetch Hosts
+                        Fetch {targetType === 'Nixos' ? 'Hosts' : 'Configs'}
                     </Button>
                 ) : (
                     <div className="flex gap-2">
@@ -206,11 +225,11 @@ function NewBuild() {
               ) : (
                 <>
                   <Input
-                    placeholder="media-server, rpi5"
+                    placeholder={targetType === 'Nixos' ? 'media-server, rpi5' : 'user@host, alice'}
                     value={hosts}
                     onChange={e => setHosts(e.target.value)}
                   />
-                  <p className="text-xs text-muted-foreground">Leave empty to build all hosts in the flake.</p>
+                  <p className="text-xs text-muted-foreground">Leave empty to build all {targetType === 'Nixos' ? 'hosts' : 'Home Manager configs'} in the flake.</p>
                 </>
               )}
             </div>

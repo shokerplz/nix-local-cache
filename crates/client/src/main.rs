@@ -1,7 +1,11 @@
-use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
-use reqwest::Client;
-use std::process::Command;
+use clap::{Parser, Subcommand};
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use nix_local_cache_common::{BuildTarget, Job, PaginatedJobs};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -10,18 +14,19 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Terminal,
 };
-use crossterm::{
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use nix_local_cache_common::{Job, PaginatedJobs};
+use reqwest::Client;
+use std::path::Path;
+use std::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// URL of the nix-local-cache server API
-    #[arg(long, env = "NIX_LOCAL_CACHE_API", default_value = "http://localhost:3000")]
+    #[arg(
+        long,
+        env = "NIX_LOCAL_CACHE_API",
+        default_value = "http://localhost:3000"
+    )]
     pub api: String,
 
     /// URL of the binary cache (defaults to API URL if not set)
@@ -44,14 +49,15 @@ enum Commands {
     Apply {
         /// Job ID to apply (optional, interactive mode if missing)
         job_id: Option<String>,
-        
+
         /// Skip confirmation
         #[arg(long, short)]
         yes: bool,
     },
 }
 
-#[tokio::main] async fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let client = Client::new();
 
@@ -61,7 +67,9 @@ enum Commands {
     let hostname = if let Some(h) = cli.host {
         h
     } else {
-        hostname::get()?.into_string().map_err(|_| anyhow::anyhow!("Invalid hostname"))?
+        hostname::get()?
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Invalid hostname"))?
     };
 
     match &cli.command {
@@ -69,14 +77,28 @@ enum Commands {
             let jobs = fetch_compatible_jobs(&client, &cli.api, &hostname).await?;
             if jobs.is_empty() {
                 println!("No compatible builds found for host '{}'", hostname);
-                return Ok(())
+                return Ok(());
             }
 
-            println!("{:<38} {:<25} {:<10} {}", "JOB ID", "DATE", "STATUS", "STORE PATH");
+            println!(
+                "{:<38} {:<25} {:<10} {}",
+                "JOB ID", "DATE", "STATUS", "STORE PATH"
+            );
             println!("{:-<38} {:-<25} {:-<10} {:-<10}", "", "", "", "");
             for job in jobs {
-                let path = job.results.as_ref().and_then(|r| r.get(&hostname)).map(|s| s.as_str()).unwrap_or("N/A");
-                println!("{:<38} {:<25} {:<10} {}", job.id, job.created_at.format("%Y-%m-%d %H:%M:%S"), format!("{:?}", job.status), path);
+                let path = job
+                    .results
+                    .as_ref()
+                    .and_then(|r| r.get(&hostname))
+                    .map(|s| s.as_str())
+                    .unwrap_or("N/A");
+                println!(
+                    "{:<38} {:<25} {:<10} {}",
+                    job.id,
+                    job.created_at.format("%Y-%m-%d %H:%M:%S"),
+                    format!("{:?}", job.status),
+                    path
+                );
             }
         }
         Commands::Apply { job_id, yes } => {
@@ -84,18 +106,22 @@ enum Commands {
                 let jobs = fetch_compatible_jobs(&client, &cli.api, &hostname).await?;
                 // Parse UUID
                 let uuid = uuid::Uuid::parse_str(id).context("Invalid Job ID format")?;
-                jobs.into_iter().find(|j| j.id == uuid).context("Job not found or not compatible")?
+                jobs.into_iter()
+                    .find(|j| j.id == uuid)
+                    .context("Job not found or not compatible")?
             } else {
                 // Interactive mode
                 let jobs = fetch_compatible_jobs(&client, &cli.api, &hostname).await?;
                 if jobs.is_empty() {
                     println!("No compatible builds found for host '{}'", hostname);
-                    return Ok(())
+                    return Ok(());
                 }
                 select_job_interactively(jobs, &hostname)?
             };
 
-            let store_path = target_job.results.as_ref()
+            let store_path = target_job
+                .results
+                .as_ref()
                 .and_then(|r| r.get(&hostname))
                 .context("Selected job has no result for this host")?;
 
@@ -103,14 +129,14 @@ enum Commands {
             println!("  Job ID:     {}", target_job.id);
             println!("  Date:       {}", target_job.created_at);
             println!("  Store Path: {}", store_path);
-            
+
             if !yes {
                 println!("\nPress Enter to apply, or Ctrl+C to cancel...");
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
             }
 
-            apply_system(store_path, &cache_uri).await?;
+            apply_config(store_path, &cache_uri, &target_job.target_type).await?;
         }
     }
 
@@ -125,7 +151,7 @@ async fn fetch_compatible_jobs(client: &Client, api: &str, hostname: &str) -> Re
     loop {
         let url = format!("{}/jobs?page={}&page_size={}", api, page, page_size);
         let response: PaginatedJobs = client.get(&url).send().await?.json().await?;
-        
+
         jobs.extend(response.jobs);
 
         if page >= response.total_pages {
@@ -133,11 +159,14 @@ async fn fetch_compatible_jobs(client: &Client, api: &str, hostname: &str) -> Re
         }
         page += 1;
     }
-    
+
     // Filter jobs that have a result for our hostname and are completed
     jobs.retain(|j| {
-        matches!(j.status, nix_local_cache_common::JobStatus::Completed) && 
-        j.results.as_ref().map(|r| r.contains_key(hostname)).unwrap_or(false)
+        matches!(j.status, nix_local_cache_common::JobStatus::Completed)
+            && j.results
+                .as_ref()
+                .map(|r| r.contains_key(hostname))
+                .unwrap_or(false)
     });
 
     Ok(jobs)
@@ -160,21 +189,46 @@ fn select_job_interactively(jobs: Vec<Job>, hostname: &str) -> Result<Job> {
                 .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
                 .split(f.size());
 
-            let items: Vec<ListItem> = jobs.iter().map(|job| {
-                let path = job.results.as_ref().and_then(|r| r.get(hostname)).map(|s| s.as_str()).unwrap_or("N/A");
-                let content = vec![
-                    Line::from(vec![
-                        Span::styled(format!("{:<22} ", job.created_at.format("%Y-%m-%d %H:%M")), Style::default().fg(Color::Yellow)),
-                        Span::styled(format!("{}", job.flake_ref), Style::default().fg(Color::Cyan)),
-                    ]),
-                    Line::from(Span::styled(format!("  {}", path), Style::default().fg(Color::DarkGray))),
-                ];
-                ListItem::new(content)
-            }).collect();
+            let items: Vec<ListItem> = jobs
+                .iter()
+                .map(|job| {
+                    let path = job
+                        .results
+                        .as_ref()
+                        .and_then(|r| r.get(hostname))
+                        .map(|s| s.as_str())
+                        .unwrap_or("N/A");
+                    let content = vec![
+                        Line::from(vec![
+                            Span::styled(
+                                format!("{:<22} ", job.created_at.format("%Y-%m-%d %H:%M")),
+                                Style::default().fg(Color::Yellow),
+                            ),
+                            Span::styled(
+                                format!("{}", job.flake_ref),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                        ]),
+                        Line::from(Span::styled(
+                            format!("  {}", path),
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ];
+                    ListItem::new(content)
+                })
+                .collect();
 
             let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).title("Select Build to Apply"))
-                .highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Select Build to Apply"),
+                )
+                .highlight_style(
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                        .bg(Color::DarkGray),
+                )
                 .highlight_symbol("> ");
 
             f.render_stateful_widget(list, chunks[0], &mut state);
@@ -193,14 +247,26 @@ fn select_job_interactively(jobs: Vec<Job>, hostname: &str) -> Result<Job> {
                 }
                 KeyCode::Down => {
                     let i = match state.selected() {
-                        Some(i) => if i >= jobs.len() - 1 { 0 } else { i + 1 },
+                        Some(i) => {
+                            if i >= jobs.len() - 1 {
+                                0
+                            } else {
+                                i + 1
+                            }
+                        }
                         None => 0,
                     };
                     state.select(Some(i));
                 }
                 KeyCode::Up => {
                     let i = match state.selected() {
-                        Some(i) => if i == 0 { jobs.len() - 1 } else { i - 1 },
+                        Some(i) => {
+                            if i == 0 {
+                                jobs.len() - 1
+                            } else {
+                                i - 1
+                            }
+                        }
                         None => 0,
                     };
                     state.select(Some(i));
@@ -216,11 +282,11 @@ fn select_job_interactively(jobs: Vec<Job>, hostname: &str) -> Result<Job> {
     }
 }
 
-async fn apply_system(store_path: &str, cache_uri: &str) -> Result<()> {
+async fn apply_config(store_path: &str, cache_uri: &str, target_type: &BuildTarget) -> Result<()> {
     println!("Fetching closure from {}...", cache_uri);
 
     let status = Command::new("nix")
-        .args(&["copy", "--from", cache_uri, store_path])
+        .args(["copy", "--from", cache_uri, store_path])
         .status()
         .context("Failed to run nix copy")?;
 
@@ -228,10 +294,16 @@ async fn apply_system(store_path: &str, cache_uri: &str) -> Result<()> {
         return Err(anyhow::anyhow!("nix copy failed"));
     }
 
-    // 2. Set profile
+    match target_type {
+        BuildTarget::Nixos => apply_system(store_path),
+        BuildTarget::HomeManager => apply_home_manager(store_path),
+    }
+}
+
+fn apply_system(store_path: &str) -> Result<()> {
     println!("Setting system profile...");
     let status = Command::new("nix-env")
-        .args(&["-p", "/nix/var/nix/profiles/system", "--set", store_path])
+        .args(["-p", "/nix/var/nix/profiles/system", "--set", store_path])
         .status()
         .context("Failed to set system profile")?;
 
@@ -239,7 +311,6 @@ async fn apply_system(store_path: &str, cache_uri: &str) -> Result<()> {
         return Err(anyhow::anyhow!("nix-env failed"));
     }
 
-    // 3. Switch
     println!("Switching configuration...");
     let switch_bin = format!("{}/bin/switch-to-configuration", store_path);
     let status = Command::new(switch_bin)
@@ -252,5 +323,38 @@ async fn apply_system(store_path: &str, cache_uri: &str) -> Result<()> {
     }
 
     println!("Successfully switched to {}", store_path);
+    Ok(())
+}
+
+fn apply_home_manager(store_path: &str) -> Result<()> {
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    let profile = format!("{}/.local/state/nix/profiles/home-manager", home);
+
+    if let Some(parent) = Path::new(&profile).parent() {
+        std::fs::create_dir_all(parent)
+            .context("Failed to create Home Manager profile directory")?;
+    }
+
+    println!("Setting Home Manager profile...");
+    let status = Command::new("nix-env")
+        .args(["-p", &profile, "--set", store_path])
+        .status()
+        .context("Failed to set Home Manager profile")?;
+
+    if !status.success() {
+        return Err(anyhow::anyhow!("nix-env failed"));
+    }
+
+    println!("Activating Home Manager configuration...");
+    let activate_bin = format!("{}/activate", store_path);
+    let status = Command::new(activate_bin)
+        .status()
+        .context("Failed to activate Home Manager configuration")?;
+
+    if !status.success() {
+        return Err(anyhow::anyhow!("Home Manager activation failed"));
+    }
+
+    println!("Successfully activated {}", store_path);
     Ok(())
 }

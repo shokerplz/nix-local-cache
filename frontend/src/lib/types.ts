@@ -2,8 +2,10 @@
 
 export type JobStatus = "Queued" | "Running" | "Completed" | "Failed";
 
-export type Job = { id: string, hosts: Array<string>, status: JobStatus, status_message: string | null, created_at: string, started_at: string | null, finished_at: string | null, log_path: string, flake_ref: string, timeout_seconds: bigint, results: { [key in string]?: string } | null, current_host: string | null, };
+export type BuildTarget = "Nixos" | "HomeManager";
 
-export type BuildRequest = { hosts: Array<string> | null, flake_url: string | null, flake_branch: string | null, timeout_seconds: bigint | null, };
+export type Job = { id: string, hosts: Array<string>, status: JobStatus, status_message: string | null, created_at: string, started_at: string | null, finished_at: string | null, log_path: string, flake_ref: string, target_type: BuildTarget, timeout_seconds: bigint, results: { [key in string]?: string } | null, current_host: string | null, };
+
+export type BuildRequest = { hosts: Array<string> | null, flake_url: string | null, flake_branch: string | null, target_type: BuildTarget | null, timeout_seconds: bigint | null, };
 
 export type PaginatedJobs = { jobs: Array<Job>, total: bigint, page: number, page_size: number, total_pages: number, };

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Local;
+use nix_local_cache_common::BuildTarget;
 use serde_json::Value;
 use std::process::Stdio;
 use tokio::fs::File;
@@ -11,43 +12,71 @@ use tracing::debug;
 pub struct NixOps;
 
 impl NixOps {
-    pub async fn get_hosts(&self, flake_path: &str) -> Result<Vec<String>> {
+    pub async fn get_hosts(
+        &self,
+        flake_path: &str,
+        target_type: &BuildTarget,
+    ) -> Result<Vec<String>> {
+        let attr = flake_configurations_attr(target_type);
         let expr = format!(
-            "let f = builtins.getFlake (toString {}); in builtins.concatStringsSep \" \" (builtins.attrNames f.nixosConfigurations)",
-            flake_path
+            "let f = builtins.getFlake (toString {}); in builtins.concatStringsSep \" \" (builtins.attrNames f.{})",
+            flake_path, attr
         );
 
         let output = run_nix(&["eval", "--impure", "--raw", "--expr", &expr]).await?;
         Ok(output.split_whitespace().map(String::from).collect())
     }
 
-    pub async fn get_system_arch(&self, flake_path: &str, host: &str) -> Result<String> {
-        let attr = format!(
-            "{}#nixosConfigurations.{}.pkgs.stdenv.hostPlatform.system",
-            flake_path, host
-        );
-        run_nix(&["eval", "--raw", &attr]).await
-    }
-
-    pub async fn get_drv_path(&self, flake_path: &str, host: &str) -> Result<String> {
-        let attr = format!(
-            "{}#nixosConfigurations.{}.config.system.build.toplevel.drvPath",
-            flake_path, host
-        );
-        run_nix(&["eval", "--raw", &attr]).await
-    }
-
-    pub async fn build_system(
+    pub async fn get_system_arch(
         &self,
         flake_path: &str,
         host: &str,
+        target_type: &BuildTarget,
+    ) -> Result<String> {
+        let attr = match target_type {
+            BuildTarget::Nixos => format!(
+                "{}#nixosConfigurations.{}.pkgs.stdenv.hostPlatform.system",
+                flake_path, host
+            ),
+            BuildTarget::HomeManager => format!(
+                "{}#homeConfigurations.{}.activationPackage.system",
+                flake_path, host
+            ),
+        };
+        run_nix(&["eval", "--raw", &attr]).await
+    }
+
+    pub async fn get_drv_path(
+        &self,
+        flake_path: &str,
+        host: &str,
+        target_type: &BuildTarget,
+    ) -> Result<String> {
+        let attr = format!(
+            "{}#{}.{}.{}.drvPath",
+            flake_path,
+            flake_configurations_attr(target_type),
+            host,
+            build_output_attr(target_type)
+        );
+        run_nix(&["eval", "--raw", &attr]).await
+    }
+
+    pub async fn build_config(
+        &self,
+        flake_path: &str,
+        host: &str,
+        target_type: &BuildTarget,
         cores: Option<u32>,
         builders: Option<&str>,
         log_file: &mut File,
     ) -> Result<String> {
         let attr = format!(
-            "{}#nixosConfigurations.{}.config.system.build.toplevel",
-            flake_path, host
+            "{}#{}.{}.{}",
+            flake_path,
+            flake_configurations_attr(target_type),
+            host,
+            build_output_attr(target_type)
         );
         let mut args = vec!["build", &attr, "--print-out-paths", "--print-build-logs"];
 
@@ -123,6 +152,20 @@ impl NixOps {
             "Failed to parse derivation outputs for: {}",
             drv_path
         ))
+    }
+}
+
+fn flake_configurations_attr(target_type: &BuildTarget) -> &'static str {
+    match target_type {
+        BuildTarget::Nixos => "nixosConfigurations",
+        BuildTarget::HomeManager => "homeConfigurations",
+    }
+}
+
+fn build_output_attr(target_type: &BuildTarget) -> &'static str {
+    match target_type {
+        BuildTarget::Nixos => "config.system.build.toplevel",
+        BuildTarget::HomeManager => "activationPackage",
     }
 }
 

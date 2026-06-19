@@ -64,6 +64,7 @@ function JobDetails() {
           <div className="space-y-1">
             <CardTitle className="text-xl break-all">Job {id.slice(0, 8)}</CardTitle>
             <div className="text-sm text-muted-foreground break-all">{job.flake_ref || "Local Flake"}</div>
+            <Badge variant="outline">{job.target_type === 'HomeManager' ? 'Home Manager' : 'NixOS'}</Badge>
           </div>
           <div className="flex items-center gap-4 flex-wrap">
             {job.status === 'Failed' && (
@@ -98,7 +99,7 @@ function JobDetails() {
         <CardContent className="p-4 sm:p-6 pt-0 sm:pt-0">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <div className="col-span-1 sm:col-span-2">
-              <span className="font-medium block mb-2">Hosts:</span>
+              <span className="font-medium block mb-2">{job.target_type === 'HomeManager' ? 'Home Manager configs' : 'Hosts'}:</span>
               <div className="flex flex-wrap gap-2">
                 {job.hosts.map((host: string) => {
                   const isCompleted = job.results && job.results[host];

@@ -1,4 +1,4 @@
-use nix_local_cache_common::{BuildRequest, Job, JobStatus, PaginatedJobs};
+use nix_local_cache_common::{BuildRequest, BuildTarget, Job, JobStatus, PaginatedJobs};
 use std::path::Path;
 use ts_rs::TS;
 
@@ -13,6 +13,9 @@ fn main() {
 
     buffer.push_str("export ");
     buffer.push_str(&JobStatus::decl());
+    buffer.push_str("\n\n");
+    buffer.push_str("export ");
+    buffer.push_str(&BuildTarget::decl());
     buffer.push_str("\n\n");
     buffer.push_str("export ");
     buffer.push_str(&Job::decl());

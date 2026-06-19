@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN target_type TEXT NOT NULL DEFAULT 'Nixos';

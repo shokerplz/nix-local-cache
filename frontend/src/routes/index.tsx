@@ -18,6 +18,7 @@ interface Job {
   updated_at: number
   flake_path: string
   flake_ref?: string
+  target_type: 'Nixos' | 'HomeManager'
   hosts: string[]
 }
 
@@ -72,6 +73,7 @@ function Dashboard() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-sm text-muted-foreground">{job.id.slice(0, 8)}</span>
                     <StatusBadge status={job.status} />
+                    <Badge variant="outline">{job.target_type === 'HomeManager' ? 'Home Manager' : 'NixOS'}</Badge>
                   </div>
                   <div className="font-medium truncate">{job.flake_ref || "Local Flake"}</div>
                   <div className="flex gap-2 text-sm text-muted-foreground items-center flex-wrap">

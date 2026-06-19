@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use futures::Stream;
-use nix_local_cache_common::{BuildRequest, PaginatedJobs};
+use nix_local_cache_common::{BuildRequest, BuildTarget, PaginatedJobs};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
@@ -53,6 +53,7 @@ async fn health() -> impl IntoResponse {
 struct GetHostsQuery {
     flake_url: Option<String>,
     branch: Option<String>,
+    target_type: Option<BuildTarget>,
 }
 
 async fn get_flake_hosts(
@@ -65,7 +66,9 @@ async fn get_flake_hosts(
         &state.service.settings.flake_path,
     );
 
-    match state.service.get_hosts(&flake_ref).await {
+    let target_type = query.target_type.unwrap_or(BuildTarget::Nixos);
+
+    match state.service.get_hosts(&flake_ref, &target_type).await {
         Ok(hosts) => Json::<Vec<String>>(hosts).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
