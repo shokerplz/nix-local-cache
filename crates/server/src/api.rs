@@ -39,6 +39,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/jobs/:id/restart", post(restart_job))
         .route("/jobs/:id/logs", get(stream_job_logs))
         .route("/jobs/:id/logs/range", get(get_job_logs_range))
+        .route("/gc/plan", get(gc_plan))
         .route("/logs", get(list_logs))
         .route("/logs/:name", get(get_log))
         .layer(cors)
@@ -336,6 +337,29 @@ async fn stream_job_logs(
     Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::default())
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct GcPlanQuery {
+    days: Option<u32>,
+}
+
+/// Reports what the cache garbage collector would delete. Deletes nothing.
+async fn gc_plan(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<GcPlanQuery>,
+) -> impl IntoResponse {
+    let Some(days) = query.days.or(state.service.settings.gc_retention_days) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "gc_retention_days is not configured; pass ?days=N",
+        )
+            .into_response();
+    };
+    match state.service.gc(days, None).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", e)).into_response(),
+    }
 }
 
 async fn list_logs(State(state): State<Arc<AppState>>) -> impl IntoResponse {

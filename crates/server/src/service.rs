@@ -1,4 +1,5 @@
 use crate::config::Settings;
+use crate::gc;
 use crate::nix;
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -8,9 +9,9 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedRwLockWriteGuard, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -22,6 +23,8 @@ pub struct BuildService {
     queue_tx: mpsc::Sender<Uuid>,
     db_pool: SqlitePool,
     nix_ops: Arc<crate::nix::NixOps>,
+    /// Jobs hold this shared while they run; the garbage collector takes it exclusively.
+    gc_lock: Arc<RwLock<()>>,
 }
 
 const DEFAULT_JOB_TIMEOUT_SECONDS: u64 = 12 * 60 * 60;
@@ -55,6 +58,7 @@ impl BuildService {
             queue_tx: tx,
             db_pool,
             nix_ops,
+            gc_lock: Arc::new(RwLock::new(())),
         };
         Ok((service, rx))
     }
@@ -62,6 +66,7 @@ impl BuildService {
     pub async fn init(&self) -> Result<()> {
         fs::create_dir_all(&self.settings.cache_dir)?;
         fs::create_dir_all(&self.settings.log_dir)?;
+        fs::create_dir_all(&self.settings.manifest_dir)?;
 
         let cache_info = Path::new(&self.settings.cache_dir).join("nix-cache-info");
         if !cache_info.exists() {
@@ -362,6 +367,8 @@ impl BuildService {
     }
 
     pub async fn process_job(&self, job_id: Uuid) {
+        let upload_guard = self.gc_lock.read().await;
+
         if let Some(job) = self.jobs.get(&job_id) {
             if matches!(job.status, JobStatus::Failed)
                 && job.status_message.as_deref() == Some(CANCELLED_BY_USER_MESSAGE)
@@ -489,7 +496,71 @@ impl BuildService {
 
         if let Err(e) = self.update_job_in_db(&job_data).await {
             error!("Failed to update job {} in DB: {}", job_id, e);
+            // The collector reads its roots from the DB, which now lacks this job's results.
+            return;
         }
+
+        drop(upload_guard);
+        self.gc_after_job().await;
+    }
+
+    async fn gc_after_job(&self) {
+        let Some(days) = self.settings.gc_retention_days else {
+            return;
+        };
+        // If another job is still uploading, it collects when it finishes.
+        let Ok(guard) = self.gc_lock.clone().try_write_owned() else {
+            return;
+        };
+        match self.gc(days, Some(guard)).await {
+            Ok(report) if report.swept && report.failed_nar_deletes == 0 => {
+                info!("Cache garbage collection: {:?}", report)
+            }
+            Ok(report) => warn!("Cache garbage collection incomplete: {:?}", report),
+            Err(e) => error!("Cache garbage collection failed: {:#}", e),
+        }
+    }
+
+    /// Runs the cache garbage collector. Without `sweep_guard` it is a dry run.
+    pub async fn gc(
+        &self,
+        retention_days: u32,
+        sweep_guard: Option<OwnedRwLockWriteGuard<()>>,
+    ) -> Result<gc::GcReport> {
+        // Not `self.jobs`: it only holds the subset loaded at startup.
+        let rows = sqlx::query("SELECT id, created_at, started_at, target_type, results FROM jobs")
+            .fetch_all(&self.db_pool)
+            .await?;
+        let mut jobs = Vec::new();
+        for row in rows {
+            jobs.push(gc::JobRoots {
+                id: row.try_get("id")?,
+                built_at: row
+                    .try_get::<Option<_>, _>("started_at")?
+                    .unwrap_or(row.try_get("created_at")?),
+                target_type: row.try_get("target_type")?,
+                results: row
+                    .try_get::<Option<String>, _>("results")?
+                    .and_then(|v| serde_json::from_str(&v).ok())
+                    .unwrap_or_default(),
+            });
+        }
+
+        let cache_dir = PathBuf::from(&self.settings.cache_dir);
+        let manifest_dir = PathBuf::from(&self.settings.manifest_dir);
+        // The guard moves into the blocking thread, so the cache stays locked
+        // until the sweep is done even if this task is aborted.
+        tokio::task::spawn_blocking(move || {
+            gc::run(
+                &cache_dir,
+                &manifest_dir,
+                jobs,
+                retention_days,
+                Local::now(),
+                sweep_guard.is_none(),
+            )
+        })
+        .await?
     }
 
     async fn build_with_retry(
@@ -700,6 +771,15 @@ impl BuildService {
             }
         }
 
+        // Everything this host needs in the cache. The garbage collector keeps
+        // these paths for as long as it keeps this job.
+        gc::append_manifest(
+            Path::new(&self.settings.manifest_dir),
+            job_id,
+            requisites.iter().chain(&all_outputs),
+        )
+        .context("Failed to write cache manifest")?;
+
         let mut paths_to_copy = Vec::new();
         let mut paths_to_realise = Vec::new();
         let mut outputs_to_copy = Vec::new();
@@ -802,4 +882,89 @@ fn get_hash(path: &str) -> Option<&str> {
         .file_name()
         .and_then(|f| f.to_str())
         .map(|s| &s[0..32])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn gc_takes_roots_from_the_database_and_counts_a_restart_as_a_new_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| dir.path().join(name).to_string_lossy().to_string();
+        let settings = Settings {
+            flake_path: ".".into(),
+            cache_dir: at("cache"),
+            log_dir: at("log"),
+            port: 0,
+            hosts: None,
+            worker_threads: 1,
+            retry_count: 1,
+            retry_delay_secs: 0,
+            arch_cores: HashMap::new(),
+            secret_key_file: None,
+            sqlite_db_path: at("jobs.sqlite"),
+            builders: None,
+            manifest_dir: at("manifests"),
+            gc_retention_days: Some(30),
+        };
+        let (service, _queue) = BuildService::new(settings, Arc::new(nix::NixOps))
+            .await
+            .unwrap();
+        service.init().await.unwrap();
+        fs::create_dir_all(dir.path().join("cache/nar")).unwrap();
+
+        let narinfo = |c: char| {
+            dir.path()
+                .join(format!("cache/{}.narinfo", c.to_string().repeat(32)))
+        };
+        let days_ago = |days: i64| Local::now() - chrono::Duration::days(days);
+        // Puts a result in the cache and records the job that built it for host1.
+        let build = |c: char, created: i64, started: i64| {
+            fs::write(narinfo(c), format!("URL: nar/{c}.nar.xz\nReferences: \n")).unwrap();
+            fs::write(dir.path().join(format!("cache/nar/{c}.nar.xz")), "nar").unwrap();
+            Job {
+                id: Uuid::new_v4(),
+                hosts: vec!["host1".into()],
+                status: JobStatus::Completed,
+                status_message: None,
+                created_at: days_ago(created),
+                started_at: Some(days_ago(started)),
+                finished_at: None,
+                log_path: "job.log".into(),
+                flake_ref: ".".into(),
+                target_type: BuildTarget::Nixos,
+                timeout_seconds: 60,
+                results: Some(HashMap::from([(
+                    "host1".to_string(),
+                    format!("/nix/store/{}-system", c.to_string().repeat(32)),
+                )])),
+                current_host: None,
+            }
+        };
+        let jobs = [
+            build('a', 40, 40), // expired
+            build('b', 1, 1),   // yesterday
+            build('c', 40, 0),  // created 40 days ago, restarted today
+        ];
+        for job in &jobs {
+            service.insert_job_into_db(job).await.unwrap();
+            gc::append_manifest(
+                Path::new(&service.settings.manifest_dir),
+                job.id,
+                std::iter::empty(),
+            )
+            .unwrap();
+        }
+
+        let guard = service.gc_lock.clone().try_write_owned().unwrap();
+        let report = service.gc(30, Some(guard)).await.unwrap();
+
+        assert!(report.swept);
+        assert_eq!((report.root_jobs, report.deleted_narinfos), (2, 1));
+        assert!(!narinfo('a').exists() && narinfo('b').exists() && narinfo('c').exists());
+        // The cache is unlocked again once the sweep has finished.
+        assert!(service.gc_lock.try_write().is_ok());
+    }
 }

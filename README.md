@@ -49,6 +49,16 @@ programs.ssh.knownHosts = {
 };
 ```
 
+### Garbage Collection
+
+The cache grows with every build unless you set a retention period (`gc_retention_days` in `config.toml`, `NIX_CACHE_GC_RETENTION_DAYS`, or `gcRetentionDays` in the NixOS module). It is off by default.
+
+*   **What is kept:** everything needed by builds from the last N days, plus the newest build of every host no matter how old. "Needed" is the runtime closure and the build-time closure the job uploaded (recorded per job in the `manifests` directory).
+*   **When it runs:** after a job finishes, when no other job is running. Jobs wait while it deletes.
+*   **Preview:** `GET /gc/plan?days=30` reports what would be deleted and deletes nothing. It works with retention unset. It scans the whole cache, so call the server directly if your reverse proxy times out.
+*   **First run:** builds made before manifests existed only have their runtime closure protected. The collector refuses to delete while the newest build of any current host has no manifest (`unprotected_targets` in the report), so let every host build once after upgrading.
+*   **Clients:** Nix remembers that a path exists in a cache for 30 days by default (`narinfo-cache-positive-ttl`). A client that asks for a collected path gets a 404 for the NAR and needs another substituter or `--fallback`. This only affects paths older than the retention period.
+
 ### Frontend Configuration in Production
 
 If you deploy the frontend separately (e.g., via Nginx or a CDN) or behind a reverse proxy, you need to tell it where the API is. The frontend looks for a global `window.SERVER_CONFIG` object.

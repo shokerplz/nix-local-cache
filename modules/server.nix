@@ -46,6 +46,17 @@ in {
       description = "Directory for database, logs, and cache.";
     };
 
+    gcRetentionDays = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 30;
+      description = ''
+        Delete cache contents not needed by any build from the last N days
+        (the newest build of every host is always kept). The collector runs
+        after each job. null disables it.
+      '';
+    };
+
     enableNginx = lib.mkEnableOption "Nginx reverse proxy and static file serving";
 
     domain = lib.mkOption {
@@ -87,7 +98,11 @@ in {
           NIX_CACHE_CACHE_DIR = "${cfg.workingDir}/cache";
           NIX_CACHE_LOG_DIR = "${cfg.workingDir}/log";
           NIX_CACHE_SQLITE_DB_PATH = "${cfg.workingDir}/jobs.sqlite";
+          NIX_CACHE_MANIFEST_DIR = "${cfg.workingDir}/manifests";
           # NIX_CACHE_META_FILE = "${cfg.workingDir}/metadata.json"; # Optional if code handles default
+        }
+        // lib.optionalAttrs (cfg.gcRetentionDays != null) {
+          NIX_CACHE_GC_RETENTION_DAYS = toString cfg.gcRetentionDays;
         }
         // lib.optionalAttrs (cfg.builders != null) {
           NIX_CACHE_BUILDERS = cfg.builders;

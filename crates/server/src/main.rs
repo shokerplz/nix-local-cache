@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod gc;
 mod logging;
 mod nix;
 mod service;

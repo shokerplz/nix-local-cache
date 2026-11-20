@@ -17,6 +17,8 @@ pub struct Settings {
     pub secret_key_file: Option<String>,
     pub sqlite_db_path: String,
     pub builders: Option<String>,
+    pub manifest_dir: String,
+    pub gc_retention_days: Option<u32>,
 }
 
 #[derive(Parser, Debug)]
@@ -73,6 +75,7 @@ impl Settings {
             .set_default("retry_delay_secs", 10)?
             .set_default("arch_cores.aarch64-linux", 1)?
             .set_default("sqlite_db_path", "jobs.sqlite")?
+            .set_default("manifest_dir", "manifests")?
             .add_source(File::with_name(&args.config).required(false))
             .add_source(Environment::with_prefix("NIX_CACHE"));
 
